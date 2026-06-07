@@ -333,6 +333,12 @@ async def get_salon_info() -> dict:
     Returns:
         dict: Salon metadata including name, address, work_time, and services.
     """
+    # ---------------------------------------------------------------------------
+    # 🔥 ХАТИ НАВБАҲОРӢ: Барои он ки бот 15 дақиқа мунтазири Firebase нашуда,
+    # дар сония ҷавоб диҳад, мустақиман маълумоти маҳаллиро мефиристем!
+    # ---------------------------------------------------------------------------
+    return _LOCAL_SALON_DATA
+
     if _firestore_client is None:
         # Firebase was not initialised (missing env var or init error).
         logger.debug("Firestore client unavailable; returning local salon data.")
@@ -361,8 +367,6 @@ async def get_salon_info() -> dict:
             exc_info=True,
         )
         return _LOCAL_SALON_DATA
-
-
 # ---------------------------------------------------------------------------
 # SECTION 4 — AI HELPERS
 # ---------------------------------------------------------------------------
