@@ -1,18 +1,40 @@
 """
 bot.py — Production-Ready AI Assistant for Beauty Salon (Telegram Bot)
 =======================================================================
-Phase 2 — Firebase Firestore Integration (Secret File credentials)
--------------------------------------------------------------------
+Phase 2 — Firebase Firestore Integration (per-field env-var credentials)
+------------------------------------------------------------------------
 Architecture highlights:
   - Fully async: health-check server uses aiohttp (non-blocking) instead of
     threading + stdlib HTTPServer, so the entire process runs on one event loop.
   - Enterprise error handling: every API call is wrapped; the bot NEVER crashes.
   - Standard logging module with configurable level via LOG_LEVEL env var.
   - DRY constants: all prompts, messages, and config live in one place.
-  - Firebase Admin SDK is initialised once at startup from the service-account
-    key file deployed via Render's "Secret Files" feature (firebase_key.json).
+  - Firebase credentials are assembled from individual environment variables,
+    one per field. This is the only approach that is completely immune to the
+    "Invalid JWT Signature" / private-key escaping bug that affects JSON files
+    and single-string env vars: each scalar value is safe in an env var, and
+    the private key's \\n sequences are restored with a single .replace() call.
   - get_salon_info() fetches from Firestore asynchronously; on any failure it
     falls back to _LOCAL_SALON_DATA so the bot keeps working uninterrupted.
+
+Required environment variables (Render → Environment):
+  TELEGRAM_BOT_TOKEN          — Telegram bot token
+  GEMINI_API_KEY              — Google Gemini API key
+  FIREBASE_TYPE               — "service_account"
+  FIREBASE_PROJECT_ID         — e.g. "my-project-12345"
+  FIREBASE_PRIVATE_KEY_ID     — 40-char hex string
+  FIREBASE_PRIVATE_KEY        — RSA private key (paste with literal \\n or real newlines)
+  FIREBASE_CLIENT_EMAIL       — service account email
+  FIREBASE_CLIENT_ID          — numeric string
+  FIREBASE_AUTH_URI           — https://accounts.google.com/o/oauth2/auth
+  FIREBASE_TOKEN_URI          — https://oauth2.googleapis.com/token
+  FIREBASE_AUTH_PROVIDER_CERT — https://www.googleapis.com/oauth2/v1/certs
+  FIREBASE_CLIENT_CERT        — service account x509 cert URL
+
+Optional:
+  PORT                        — health-check server port (default 10000)
+  GEMINI_MODEL                — Gemini model name (default gemini-2.5-flash)
+  LOG_LEVEL                   — DEBUG / INFO / WARNING (default INFO)
 
 Dependencies (pip install):
   python-telegram-bot>=20.0
@@ -72,10 +94,6 @@ GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
 HEALTH_PORT: int = int(os.environ.get("PORT", 10000))
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
-# Path to the Firebase service-account key file deployed via Render Secret Files.
-# Override with the FIREBASE_KEY_PATH env var if the file is placed elsewhere.
-FIREBASE_KEY_PATH: str = os.environ.get("FIREBASE_KEY_PATH", "firebase_key.json")
-
 # Validate mandatory env vars at startup so the error is obvious.
 if not BOT_TOKEN:
     logger.critical("TELEGRAM_BOT_TOKEN is not set. Exiting.")
@@ -83,6 +101,92 @@ if not BOT_TOKEN:
 if not GEMINI_API_KEY:
     logger.critical("GEMINI_API_KEY is not set. Exiting.")
     sys.exit(1)
+
+# --- Firebase credential fields (each stored as its own env var) -----------
+# WHY individual env vars instead of a JSON file or a single JSON string?
+#
+# The Firebase private key is a multi-line RSA PEM block. Every other storage
+# strategy runs into the same escaping trap:
+#
+#   • JSON file      → shells, editors, and Render's Secret Files UI all risk
+#                      converting the literal \n sequences in the key to real
+#                      newlines or back again, silently corrupting the PEM.
+#   • Single env var → pasting a JSON blob into a Render env-var field goes
+#                      through the browser and Render's own serialisation,
+#                      which double-escapes or strips backslashes unpredictably.
+#
+# Individual env vars sidestep every one of these issues:
+#   • Each scalar field (project_id, client_email …) is a plain string —
+#     completely safe in any env-var mechanism.
+#   • The private key is stored in FIREBASE_PRIVATE_KEY exactly as Render
+#     presents it (with literal \n or real newlines — we normalise both).
+#   • _build_firebase_credentials() applies one deterministic .replace() call
+#     to restore proper newlines before the key is passed to the SDK.
+#   • No file I/O, no JSON parsing, no shell quoting — nothing to go wrong.
+
+def _build_firebase_credentials() -> dict | None:
+    """
+    Assemble the Firebase service-account credential dictionary from
+    individual environment variables.
+
+    Returns None (and logs a warning) if any required field is absent,
+    so the caller can skip Firebase initialisation gracefully.
+
+    The private-key normalisation step deserves explanation:
+      Render stores env var values as-is. When a user pastes a PEM key,
+      the newlines may arrive as:
+        (a) real newline characters  → the key is already correct
+        (b) the two-character sequence \\n → must be replaced with \n
+      We call  .replace("\\\\n", "\n")  which handles case (b) without
+      breaking case (a), because a real newline is not the string "\\n".
+    """
+    required_fields = {
+        "type":                         "FIREBASE_TYPE",
+        "project_id":                   "FIREBASE_PROJECT_ID",
+        "private_key_id":               "FIREBASE_PRIVATE_KEY_ID",
+        "private_key":                  "FIREBASE_PRIVATE_KEY",
+        "client_email":                 "FIREBASE_CLIENT_EMAIL",
+        "client_id":                    "FIREBASE_CLIENT_ID",
+        "auth_uri":                     "FIREBASE_AUTH_URI",
+        "token_uri":                    "FIREBASE_TOKEN_URI",
+        "auth_provider_x509_cert_url":  "FIREBASE_AUTH_PROVIDER_CERT",
+        "client_x509_cert_url":         "FIREBASE_CLIENT_CERT",
+    }
+
+    cred_dict: dict = {}
+    missing: list[str] = []
+
+    for json_key, env_var in required_fields.items():
+        value = os.environ.get(env_var, "")
+        if not value:
+            missing.append(env_var)
+        else:
+            cred_dict[json_key] = value
+
+    if missing:
+        logger.warning(
+            "Firebase initialisation skipped — the following env vars are not set: %s. "
+            "Bot will use local fallback salon data.",
+            ", ".join(missing),
+        )
+        return None
+
+    # -----------------------------------------------------------------------
+    # THE CRITICAL FIX — private key newline normalisation
+    # -----------------------------------------------------------------------
+    # Render (and most CI/CD platforms) may store the private key with the
+    # literal two-character sequence \n instead of a real newline character.
+    # credentials.Certificate() passes the key to the google-auth RSA parser,
+    # which requires real newlines. A broken key causes "Invalid JWT Signature"
+    # at the very first Firestore request, often minutes after startup.
+    #
+    # .replace("\\n", "\n") is safe to call unconditionally:
+    #   • If the key already contains real newlines → nothing changes.
+    #   • If the key contains literal \n sequences  → they become real newlines.
+    # -----------------------------------------------------------------------
+    cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+
+    return cred_dict
 
 # --- Gemini generation settings --------------------------------------------
 GENERATION_CONFIG = types.GenerateContentConfig(
@@ -144,44 +248,47 @@ _firestore_client = None
 
 def _init_firebase() -> None:
     """
-    Initialise the Firebase Admin SDK using the service-account key file
-    deployed to the project root via Render's "Secret Files" feature.
+    Initialise the Firebase Admin SDK using a credential dictionary assembled
+    from individual environment variables by _build_firebase_credentials().
 
-    Design decisions:
-    - credentials.Certificate() is called with the file path directly; the
-      SDK reads and validates the JSON internally, which is the simplest and
-      most idiomatic approach when a real file is available on disk.
-    - FileNotFoundError is caught separately so the log message is immediately
-      actionable: the operator knows exactly that the file is missing rather
-      than getting a generic credential error.
-    - ValueError guard handles double-initialisation (hot-reloaders, tests).
-    - All other exceptions fall through to the broad except so no error can
-      crash the process; the bot gracefully continues on local data.
+    Flow:
+      1. Call _build_firebase_credentials() to collect and validate all fields.
+         Returns None if any field is missing → skip init, use local fallback.
+      2. Pass the dict directly to credentials.Certificate().
+         The SDK accepts a dict, a file path, or a file-like object; a dict is
+         the safest choice because it bypasses all file I/O and JSON parsing.
+      3. Call firebase_admin.initialize_app() with the credential.
+      4. Cache firestore.client() so get_salon_info() can reuse it cheaply.
+
+    Error handling:
+      - Missing env vars  → logged as WARNING by _build_firebase_credentials().
+      - ValueError        → SDK already initialised (hot-reload / test runner).
+      - Any other error   → logged as ERROR with full traceback; bot continues
+                            on local fallback data.
     """
     global _firestore_client  # noqa: PLW0603 — intentional module-level state
 
-    try:
-        cred = credentials.Certificate(FIREBASE_KEY_PATH)
+    cred_dict = _build_firebase_credentials()
+    if cred_dict is None:
+        # Warning already emitted inside _build_firebase_credentials().
+        return
 
-        # Guard against double-initialisation (e.g. during tests or reloads).
+    try:
+        # Pass the Python dict directly — zero file I/O, zero JSON parsing.
+        cred = credentials.Certificate(cred_dict)
+
         try:
             firebase_admin.initialize_app(cred)
         except ValueError:
-            # App already initialised — safe to reuse the existing instance.
+            # Already initialised (e.g. hot-reloader triggered main() twice).
             logger.debug("Firebase app already initialised; reusing existing instance.")
 
-        # Cache the Firestore client at module level for reuse across requests.
-        # firestore.client() is cheap after the first call (returns a singleton).
         _firestore_client = firestore.client()
-        logger.info("Firebase Admin SDK initialised successfully (key: %s).", FIREBASE_KEY_PATH)
-
-    except FileNotFoundError:
-        logger.error(
-            "Firebase key file not found at '%s' — Firestore disabled. "
-            "Ensure firebase_key.json is added as a Render Secret File. "
-            "Bot will use local fallback data.",
-            FIREBASE_KEY_PATH,
+        logger.info(
+            "Firebase Admin SDK initialised successfully (project: %s).",
+            cred_dict.get("project_id", "unknown"),
         )
+
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "Firebase initialisation failed — Firestore disabled. "
