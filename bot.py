@@ -1,16 +1,16 @@
 """
 bot.py — Production-Ready AI Assistant for Beauty Salon (Telegram Bot)
 =======================================================================
-Phase 2 — Firebase Firestore Integration
------------------------------------------
+Phase 2 — Firebase Firestore Integration (Secret File credentials)
+-------------------------------------------------------------------
 Architecture highlights:
   - Fully async: health-check server uses aiohttp (non-blocking) instead of
     threading + stdlib HTTPServer, so the entire process runs on one event loop.
   - Enterprise error handling: every API call is wrapped; the bot NEVER crashes.
   - Standard logging module with configurable level via LOG_LEVEL env var.
   - DRY constants: all prompts, messages, and config live in one place.
-  - Firebase Admin SDK is initialised once at startup from the JSON string
-    stored in the FIREBASE_CONFIG_STR environment variable (no key files on disk).
+  - Firebase Admin SDK is initialised once at startup from the service-account
+    key file deployed via Render's "Secret Files" feature (firebase_key.json).
   - get_salon_info() fetches from Firestore asynchronously; on any failure it
     falls back to _LOCAL_SALON_DATA so the bot keeps working uninterrupted.
 
@@ -22,7 +22,6 @@ Dependencies (pip install):
 """
 
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -70,9 +69,12 @@ logger = logging.getLogger(__name__)
 # --- Runtime config (read from environment) --------------------------------
 BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
-FIREBASE_CONFIG_STR: str = os.environ.get("FIREBASE_CONFIG_STR", "")
 HEALTH_PORT: int = int(os.environ.get("PORT", 10000))
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Path to the Firebase service-account key file deployed via Render Secret Files.
+# Override with the FIREBASE_KEY_PATH env var if the file is placed elsewhere.
+FIREBASE_KEY_PATH: str = os.environ.get("FIREBASE_KEY_PATH", "firebase_key.json")
 
 # Validate mandatory env vars at startup so the error is obvious.
 if not BOT_TOKEN:
@@ -81,12 +83,6 @@ if not BOT_TOKEN:
 if not GEMINI_API_KEY:
     logger.critical("GEMINI_API_KEY is not set. Exiting.")
     sys.exit(1)
-if not FIREBASE_CONFIG_STR:
-    # Non-fatal: the bot will fall back to local data, but warn loudly.
-    logger.warning(
-        "FIREBASE_CONFIG_STR is not set. Firestore is disabled; "
-        "using local salon data as fallback."
-    )
 
 # --- Gemini generation settings --------------------------------------------
 GENERATION_CONFIG = types.GenerateContentConfig(
@@ -148,48 +144,43 @@ _firestore_client = None
 
 def _init_firebase() -> None:
     """
-    Initialise the Firebase Admin SDK using the service-account JSON string
-    stored in the FIREBASE_CONFIG_STR environment variable.
+    Initialise the Firebase Admin SDK using the service-account key file
+    deployed to the project root via Render's "Secret Files" feature.
 
     Design decisions:
-    - Credentials are parsed from the env-var string at runtime — no key files
-      ever touch the disk, which is the correct approach for Render / cloud
-      hosting where the filesystem is ephemeral and not secret-safe.
-    - firebase_admin.initialize_app() is idempotent-guarded with a try/except
-      on the AlreadyExistsError so hot-reloaders (e.g. watchdog) don't crash.
-    - Sets the module-level _firestore_client so get_salon_info() can use it.
+    - credentials.Certificate() is called with the file path directly; the
+      SDK reads and validates the JSON internally, which is the simplest and
+      most idiomatic approach when a real file is available on disk.
+    - FileNotFoundError is caught separately so the log message is immediately
+      actionable: the operator knows exactly that the file is missing rather
+      than getting a generic credential error.
+    - ValueError guard handles double-initialisation (hot-reloaders, tests).
+    - All other exceptions fall through to the broad except so no error can
+      crash the process; the bot gracefully continues on local data.
     """
     global _firestore_client  # noqa: PLW0603 — intentional module-level state
 
-    if not FIREBASE_CONFIG_STR:
-        logger.warning("Firebase initialisation skipped: FIREBASE_CONFIG_STR not set.")
-        return
-
     try:
-        # Parse the raw JSON string from the environment variable.
-        service_account_info: dict = json.loads(FIREBASE_CONFIG_STR)
-
-        # Build a Certificate credential directly from the parsed dict —
-        # no temporary file needed.
-        cred = credentials.Certificate(service_account_info)
+        cred = credentials.Certificate(FIREBASE_KEY_PATH)
 
         # Guard against double-initialisation (e.g. during tests or reloads).
         try:
             firebase_admin.initialize_app(cred)
         except ValueError:
-            # App already initialised — reuse it.
+            # App already initialised — safe to reuse the existing instance.
             logger.debug("Firebase app already initialised; reusing existing instance.")
 
         # Cache the Firestore client at module level for reuse across requests.
         # firestore.client() is cheap after the first call (returns a singleton).
         _firestore_client = firestore.client()
-        logger.info("Firebase Admin SDK initialised successfully.")
+        logger.info("Firebase Admin SDK initialised successfully (key: %s).", FIREBASE_KEY_PATH)
 
-    except json.JSONDecodeError as exc:
+    except FileNotFoundError:
         logger.error(
-            "FIREBASE_CONFIG_STR is not valid JSON — Firestore disabled. "
-            "Bot will use local fallback data. Error: %s",
-            exc,
+            "Firebase key file not found at '%s' — Firestore disabled. "
+            "Ensure firebase_key.json is added as a Render Secret File. "
+            "Bot will use local fallback data.",
+            FIREBASE_KEY_PATH,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
