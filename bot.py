@@ -93,6 +93,7 @@ BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
 HEALTH_PORT: int = int(os.environ.get("PORT", 10000))
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+SALON_ID: str = os.environ.get("SALON_ID", "main")
 
 # Validate mandatory env vars at startup so the error is obvious.
 if not BOT_TOKEN:
@@ -290,7 +291,7 @@ async def get_salon_info() -> dict:
     """
     Data-access layer for salon information.
 
-    Attempts to fetch the 'salons/main' document from Cloud Firestore.
+    Attempts to fetch the document from Cloud Firestore dynamically using SALON_ID.
     Falls back to _LOCAL_SALON_DATA on any error so the bot keeps running.
 
     The Firestore SDK call is synchronous (google-cloud-firestore uses gRPC
@@ -300,37 +301,31 @@ async def get_salon_info() -> dict:
     Returns:
         dict: Salon metadata including name, address, work_time, and services.
     """
-    # ---------------------------------------------------------------------------
-    # 🔥 ХАТИ НАВБАҲОРӢ: Барои он ки бот 15 дақиқа мунтазири Firebase нашуда,
-    # дар сония ҷавоб диҳад, мустақиман маълумоти маҳаллиро мефиристем!
-    # ---------------------------------------------------------------------------
-    return _LOCAL_SALON_DATA
-
     if _firestore_client is None:
         # Firebase was not initialised (missing env var or init error).
         logger.debug("Firestore client unavailable; returning local salon data.")
         return _LOCAL_SALON_DATA
 
     try:
-        # Offload the blocking gRPC call to a thread-pool worker.
-        doc_ref = _firestore_client.collection("salons").document("main")
+        # 🔥 ИСЛОҲИ КАСБӢ 1: Ба ҷои калимаи статикии "main", мо {SALON_ID}-ро мегузорем!
+        # (Барои муштарии ҳозираи ту SALON_ID дар Render ба "main" баробар мешавад)
+        doc_ref = _firestore_client.collection("salons").document(SALON_ID)
         doc_snapshot = await asyncio.to_thread(doc_ref.get)
 
         if not doc_snapshot.exists:
             logger.warning(
-                "Firestore document 'salons/main' does not exist. "
+                f"Firestore document 'salons/{SALON_ID}' does not exist. "
                 "Falling back to local salon data."
             )
             return _LOCAL_SALON_DATA
 
         data: dict = doc_snapshot.to_dict()
-        logger.debug("Salon data fetched from Firestore: %s", data)
+        logger.debug(f"Salon data fetched from Firestore for {SALON_ID}: {data}")
         return data
 
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "Firestore fetch failed — using local fallback data. Error: %s",
-            exc,
+            f"Firestore fetch failed for {SALON_ID} — using local fallback data. Error: {exc}",
             exc_info=True,
         )
         return _LOCAL_SALON_DATA
