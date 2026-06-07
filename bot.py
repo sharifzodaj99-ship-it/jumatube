@@ -1,29 +1,37 @@
 """
 bot.py — Production-Ready AI Assistant for Beauty Salon (Telegram Bot)
 =======================================================================
+Phase 2 — Firebase Firestore Integration
+-----------------------------------------
 Architecture highlights:
   - Fully async: health-check server uses aiohttp (non-blocking) instead of
     threading + stdlib HTTPServer, so the entire process runs on one event loop.
   - Enterprise error handling: every API call is wrapped; the bot NEVER crashes.
   - Standard logging module with configurable level via LOG_LEVEL env var.
   - DRY constants: all prompts, messages, and config live in one place.
-  - DB-ready data layer: get_salon_info() is the single source of truth and
-    can be swapped to a Firestore fetch with a one-line change.
+  - Firebase Admin SDK is initialised once at startup from the JSON string
+    stored in the FIREBASE_CONFIG_STR environment variable (no key files on disk).
+  - get_salon_info() fetches from Firestore asynchronously; on any failure it
+    falls back to _LOCAL_SALON_DATA so the bot keeps working uninterrupted.
 
 Dependencies (pip install):
   python-telegram-bot>=20.0
   google-genai
   aiohttp
-  firebase-admin          # kept as optional import; not required until Phase 2
+  firebase-admin
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
 
 import aiohttp
 from aiohttp import web
+
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 from google import genai
 from google.genai import types
@@ -62,6 +70,7 @@ logger = logging.getLogger(__name__)
 # --- Runtime config (read from environment) --------------------------------
 BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
+FIREBASE_CONFIG_STR: str = os.environ.get("FIREBASE_CONFIG_STR", "")
 HEALTH_PORT: int = int(os.environ.get("PORT", 10000))
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
@@ -72,6 +81,12 @@ if not BOT_TOKEN:
 if not GEMINI_API_KEY:
     logger.critical("GEMINI_API_KEY is not set. Exiting.")
     sys.exit(1)
+if not FIREBASE_CONFIG_STR:
+    # Non-fatal: the bot will fall back to local data, but warn loudly.
+    logger.warning(
+        "FIREBASE_CONFIG_STR is not set. Firestore is disabled; "
+        "using local salon data as fallback."
+    )
 
 # --- Gemini generation settings --------------------------------------------
 GENERATION_CONFIG = types.GenerateContentConfig(
@@ -109,16 +124,11 @@ SYSTEM_INSTRUCTION_TEMPLATE = """
 
 
 # ---------------------------------------------------------------------------
-# SECTION 3 — DATA LAYER  (swap-ready for Firebase Firestore)
+# SECTION 3 — DATA LAYER  (Phase 2: Firebase Firestore)
 # ---------------------------------------------------------------------------
 
-# Phase 1: local dictionary — the single source of truth for salon data.
-# Phase 2: replace _LOCAL_SALON_DATA + get_salon_info() body with a Firestore
-#          fetch such as:
-#              doc = db.collection("salons").document("main").get()
-#              return doc.to_dict()
-#          No other code needs to change.
-
+# Local fallback — used when Firestore is unreachable or not configured.
+# Keeping this here means the bot is always operational even during a DB outage.
 _LOCAL_SALON_DATA: dict = {
     "name": "Beauty Salon",
     "address": "Душанбе, марказ",
@@ -131,26 +141,107 @@ _LOCAL_SALON_DATA: dict = {
     },
 }
 
+# Module-level reference to the Firestore client.
+# Populated by _init_firebase() at startup; None if initialisation fails.
+_firestore_client = None
+
+
+def _init_firebase() -> None:
+    """
+    Initialise the Firebase Admin SDK using the service-account JSON string
+    stored in the FIREBASE_CONFIG_STR environment variable.
+
+    Design decisions:
+    - Credentials are parsed from the env-var string at runtime — no key files
+      ever touch the disk, which is the correct approach for Render / cloud
+      hosting where the filesystem is ephemeral and not secret-safe.
+    - firebase_admin.initialize_app() is idempotent-guarded with a try/except
+      on the AlreadyExistsError so hot-reloaders (e.g. watchdog) don't crash.
+    - Sets the module-level _firestore_client so get_salon_info() can use it.
+    """
+    global _firestore_client  # noqa: PLW0603 — intentional module-level state
+
+    if not FIREBASE_CONFIG_STR:
+        logger.warning("Firebase initialisation skipped: FIREBASE_CONFIG_STR not set.")
+        return
+
+    try:
+        # Parse the raw JSON string from the environment variable.
+        service_account_info: dict = json.loads(FIREBASE_CONFIG_STR)
+
+        # Build a Certificate credential directly from the parsed dict —
+        # no temporary file needed.
+        cred = credentials.Certificate(service_account_info)
+
+        # Guard against double-initialisation (e.g. during tests or reloads).
+        try:
+            firebase_admin.initialize_app(cred)
+        except ValueError:
+            # App already initialised — reuse it.
+            logger.debug("Firebase app already initialised; reusing existing instance.")
+
+        # Cache the Firestore client at module level for reuse across requests.
+        # firestore.client() is cheap after the first call (returns a singleton).
+        _firestore_client = firestore.client()
+        logger.info("Firebase Admin SDK initialised successfully.")
+
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "FIREBASE_CONFIG_STR is not valid JSON — Firestore disabled. "
+            "Bot will use local fallback data. Error: %s",
+            exc,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Firebase initialisation failed — Firestore disabled. "
+            "Bot will use local fallback data. Error: %s",
+            exc,
+            exc_info=True,
+        )
+
 
 async def get_salon_info() -> dict:
     """
     Data-access layer for salon information.
 
-    Returns the salon data dictionary. In Phase 2 this becomes an async
-    Firestore call; the callers don't need to change at all.
+    Attempts to fetch the 'salons/main' document from Cloud Firestore.
+    Falls back to _LOCAL_SALON_DATA on any error so the bot keeps running.
+
+    The Firestore SDK call is synchronous (google-cloud-firestore uses gRPC
+    under the hood but exposes a blocking API in the standard client). We wrap
+    it in asyncio.to_thread() so it never blocks the event loop.
 
     Returns:
         dict: Salon metadata including name, address, work_time, and services.
     """
-    # --- Phase 2 Firestore snippet (commented out until needed) -------------
-    # from firebase_admin import firestore
-    # db = firestore.client()
-    # doc = await asyncio.to_thread(
-    #     db.collection("salons").document("main").get
-    # )
-    # return doc.to_dict() if doc.exists else _LOCAL_SALON_DATA
-    # ------------------------------------------------------------------------
-    return _LOCAL_SALON_DATA
+    if _firestore_client is None:
+        # Firebase was not initialised (missing env var or init error).
+        logger.debug("Firestore client unavailable; returning local salon data.")
+        return _LOCAL_SALON_DATA
+
+    try:
+        # Offload the blocking gRPC call to a thread-pool worker.
+        doc_ref = _firestore_client.collection("salons").document("main")
+        doc_snapshot = await asyncio.to_thread(doc_ref.get)
+
+        if not doc_snapshot.exists:
+            logger.warning(
+                "Firestore document 'salons/main' does not exist. "
+                "Falling back to local salon data."
+            )
+            return _LOCAL_SALON_DATA
+
+        data: dict = doc_snapshot.to_dict()
+        logger.debug("Salon data fetched from Firestore: %s", data)
+        return data
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Firestore fetch failed — using local fallback data. Error: %s",
+            exc,
+            exc_info=True,
+        )
+        return _LOCAL_SALON_DATA
 
 
 # ---------------------------------------------------------------------------
@@ -329,12 +420,15 @@ async def main() -> None:
     on a single asyncio event loop.
 
     Lifecycle:
-      1. Start aiohttp health server.
-      2. Build the PTB Application.
-      3. Run polling (PTB manages its own internal loop via run_polling, but
-         because we call it from an already-running loop we use the lower-level
-         initialize/start/idle/stop API instead).
+      1. Initialise Firebase (synchronous, fast, done once).
+      2. Start aiohttp health server.
+      3. Build the PTB Application.
+      4. Run polling via the explicit lifecycle API (avoids loop conflicts).
     """
+    # --- Firebase -----------------------------------------------------------
+    # _init_firebase() is synchronous and completes in milliseconds at startup.
+    # It must run before the first get_salon_info() call.
+    _init_firebase()
     # --- Health server ------------------------------------------------------
     health_runner = await start_health_server()
 
