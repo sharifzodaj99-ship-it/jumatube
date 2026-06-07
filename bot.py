@@ -248,56 +248,23 @@ _firestore_client = None
 
 def _init_firebase() -> None:
     """
-    Initialise the Firebase Admin SDK using the embedded configuration directly.
-    This guarantees no "Invalid JWT Signature" errors.
+    Initialise the Firebase Admin SDK using a secure Base64 encoded environment variable.
+    This bypasses all Render string escaping issues and avoids formatting corruption.
     """
     global _firestore_client  # noqa: PLW0603
 
-    try:
-        # Мо маълумоти туро мустақиман ба тағирёбандаи cred_dict баробар мекунем
-        cred_dict = {
-            "type": "service_account",
-            "project_id": "salon-ai-bot-84308",
-            "private_key_id": "3688bb0bc47894d51571387a7e1c42a840957137",
-            "private_key": (
-                "-----BEGIN PRIVATE KEY-----\n"
-                "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDXXb/m9zZUPeRG\n"
-                "MU7jWLWw9yDZfQYBwiBdSLRci71jl+ld7QhnSoHBqEE0BAesW9yx6eH2tUQJugbE\n"
-                "z/x8K61vVeXhRhF2gC+ejJI3jzWlw5ku0Le/1rUqHQIDWou3QPc1oMnR2jHBip8E\n"
-                "6JY0WCCUNg0PFsG7zrR7w6or4ccVXpNxg/dGWpe1GP3zZXFKJOXVGdgP15SyIll3\n"
-                "oQK2eqANASMPwBQPjoA7+SbhqitNdKqVP+cUwvv2U9Fhyp5FsXq0Wz05pEPlg3zw\n"
-                "I4hH9Xh2nXHEn6Ou4Cj5EZyW+LscQLyjDLHjRk0imEW349j14HyRPlqPWVCKdtrB\n"
-                "rAcRkqoNAgMBAAECggEAA3lW6hG05Et74uwsZSTuO1yx886QbTDvM9BpxMnMd1T0\n"
-                "PGH6/hJY2pTNYA3F/OnRB8qpkzP0O47u/ISmKNYAh6VhHnVMCbdChvvZmo1UFKiX\n"
-                "NqB1xYgTJvFN8fVnZkBlRg3VRS4QM7QtFMrWrDrISo1Yc3s1V7aOhgxcMpyDL40U\n"
-                "WPSAvxTtszUFZzAHoUZtAJj3eP7FZhiwkS+6EQetEiqsdQmZ8Lg5icm2os/peRMn\n"
-                "U62a2CcASEXOBX938jTYvSjX6pfn/Zgtsm+Km8gFicCvU97DBoexAhVm4IiDmemx\n"
-                "U3rmt1OwQWB7p16mGGQkhZo1NmFAJu+P3iH40ctVwQKBgQD/bUazMy+uFw96xQzE\n"
-                "p71vHGu+g74WjGIQuwx+CbmvB1wknYn5wfHtL9cLzfQ+w3KolBqwOTt9FuLBxoDU\n"
-                "Iou6vS/sFriBzJPmtx9nBZUPZjZL7pzQkV3tC0y8zyrVs5RXj9nRPQnaojL5l8p1\n"
-                "26gqspFtrou/N3BL+Gx0fPKDTQKBgQDX2XYpQmIFRooY4e/QiJOK3Q9iBeVPAbVS\n"
-                "tRMbYbvwzkzOLkucqkt/RZwQam3GnrTFM89Nab04/dwxttk5BDzHzEM8cm3KSELz\n"
-                "3/bimEBkX1RffkEumwEa1/XGn6Tj1yYFyprA0plLwIv8uGSu7ODcQO/hDTMx1/4X\n"
-                "6SrnVTPhwQKBgDcwFSaC2Lp0oROVn7ydwYBQU7dGH7wfeNDEmV5iG4yFupLutvEP\n"
-                "xoXI4F3ckfk9oXhrB5krxH6ygyv7B7rN/ALM/Z21CwiAezROPKq1ug8ptnGRjLBD\n"
-                "uFePKXViDY8+zb5dhmJ/HbHvebQT59qvKxaOnn1kSS13fPvtIQHKPVvBAoGAfo0p\n"
-                "EhexkJZC8UPGbuUkXA4vrrD2ONQvk0ZG5Y7vuce6kEfkXP4bNYuCbL15jzINmnE9\n"
-                "4Y1VO8zbBOrHgP5TBHFmGlKcvDSRzJpLDZ9mYXLi7PoBDWojw7FKkCGZc1v5Fvwq\nr1LKPfeuG4Wgwk5vp7MK8U/j7B1PBIXYebkiqgECgYEAlZC8z3SNZyEhfRvhXzmN\n"
-                "cYsi5tJs1iuzJ1+2luavnLRknZUiuDWZ3S4IzMKE+Nxb/u1A1sbb0Ey6ZawTkOvX\n"
-                "NFTKKzO8YLFrAk59NFM7p7FPmUdv6kZIQJ169qfiIugysu6Ixup1SBJ2bLQ8Gifl\n"
-                "merdjGSSuje/k8ttMGod4lA=\n"
-                "-----END PRIVATE KEY-----\n"
-            ),
-            "client_email": "firebase-adminsdk-fbsvc@salon-ai-bot-84308.iam.gserviceaccount.com",
-            "client_id": "115236808868392900734",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40salon-ai-bot-84308.iam.gserviceaccount.com",
-            "universe_domain": "googleapis.com"
-        }
+    # Сатри яклухти Base64-ро аз Render мехонем
+    base64_config = os.environ.get("FIREBASE_CONFIG_BASE64", "")
+    if not base64_config:
+        logger.warning("FIREBASE_CONFIG_BASE64 is not set. Using local fallback.")
+        return
 
-        # Ҳоло Python дикшенерро мустақиман мехонад — бе хатогии файлу символҳо!
+    try:
+        # Декод кардани сатр ба байтҳо ва табдил ба дикшенерии аслӣ
+        decoded_bytes = base64.b64decode(base64_config)
+        cred_dict = json.loads(decoded_bytes.decode("utf-8"))
+
+        # Пайвастшавӣ ба Firebase бо дикшенерии аслӣ
         cred = credentials.Certificate(cred_dict)
 
         try:
@@ -307,13 +274,13 @@ def _init_firebase() -> None:
 
         _firestore_client = firestore.client()
         logger.info(
-            "Firebase Admin SDK initialised successfully (project: %s).",
+            "Firebase Admin SDK initialised successfully via Base64 (project: %s).",
             cred_dict.get("project_id", "unknown"),
         )
 
     except Exception as exc:
         logger.error(
-            "Firebase initialisation failed — Firestore disabled. Error: %s",
+            "Firebase Base64 initialisation failed — Firestore disabled. Error: %s",
             exc,
             exc_info=True,
         )
