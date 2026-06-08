@@ -54,8 +54,7 @@ from aiohttp import web
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-from google import genai
-from google.genai import types
+from openai import AsyncOpenAI
 
 from telegram import Update
 from telegram.error import TelegramError
@@ -90,17 +89,17 @@ logger = logging.getLogger(__name__)
 
 # --- Runtime config (read from environment) --------------------------------
 BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
+DEEPSEEK_API_KEY: str = os.environ.get("DEEPSEEK_API_KEY", "")
 HEALTH_PORT: int = int(os.environ.get("PORT", 10000))
-GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+DEEPSEEK_MODEL: str = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 SALON_ID: str = os.environ.get("SALON_ID", "main")
 
 # Validate mandatory env vars at startup so the error is obvious.
 if not BOT_TOKEN:
     logger.critical("TELEGRAM_BOT_TOKEN is not set. Exiting.")
     sys.exit(1)
-if not GEMINI_API_KEY:
-    logger.critical("GEMINI_API_KEY is not set. Exiting.")
+if not DEEPSEEK_API_KEY:
+    logger.critical("DEEPSEEK_API_KEY is not set. Exiting.")
     sys.exit(1)
 
 # --- Firebase credential fields (each stored as its own env var) -----------
@@ -334,7 +333,10 @@ async def get_salon_info() -> dict:
 # ---------------------------------------------------------------------------
 
 # Instantiate the Gemini client once at module level (thread-safe, reusable).
-_gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+_deepseek_client = AsyncOpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com"
+)
 
 
 def _format_salon_block(salon: dict) -> str:
@@ -360,44 +362,31 @@ def _build_system_instruction(salon: dict) -> str:
 
 
 async def ask_ai(user_text: str) -> str:
-    """
-    Send a user message to Gemini and return the text reply.
-
-    Fetches fresh salon data on every call so that a Firestore-backed
-    get_salon_info() will always serve the latest data without a restart.
-
-    Args:
-        user_text: The raw message from the Telegram user.
-
-    Returns:
-        str: AI-generated reply, or a polite error fallback.
-    """
     try:
         salon = await get_salon_info()
         system_instruction = _build_system_instruction(salon)
 
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=GENERATION_CONFIG.temperature,
+        # Занг ба DeepSeek API
+        response = await _deepseek_client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.7,
+            stream=False
         )
 
-        # google-genai's generate_content is synchronous under the hood;
-        # wrap it in asyncio.to_thread so it doesn't block the event loop.
-        response = await asyncio.to_thread(
-            _gemini_client.models.generate_content,
-            model=GEMINI_MODEL,
-            contents=user_text,
-            config=config,
-        )
+        reply_text = response.choices[0].message.content
 
-        if not response.text:
-            logger.warning("Gemini returned an empty response for input: %r", user_text)
+        if not reply_text:
+            logger.warning("DeepSeek returned an empty response for input: %r", user_text)
             return MSG_AI_EMPTY_RESPONSE
 
-        return response.text
+        return reply_text
 
-    except Exception as exc:  # noqa: BLE001 — intentionally broad at the boundary
-        logger.error("Gemini API error: %s", exc, exc_info=True)
+    except Exception as exc:
+        logger.error("DeepSeek API error: %s", exc, exc_info=True)
         return MSG_AI_ERROR
 
 
