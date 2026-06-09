@@ -189,10 +189,8 @@ def _build_firebase_credentials() -> dict | None:
     return cred_dict
 
 # --- Gemini generation settings --------------------------------------------
-GENERATION_CONFIG = types.GenerateContentConfig(
-    temperature=0.7,
+
     # system_instruction is injected dynamically per-request (see build_ai_config)
-)
 
 # --- User-facing message constants -----------------------------------------
 # Keeping every reply string here makes translation/A-B testing trivial.
