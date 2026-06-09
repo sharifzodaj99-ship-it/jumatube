@@ -521,7 +521,7 @@ async def main() -> None:
     )
     application.add_error_handler(error_handler)
 
-    logger.info("Bot starting. Model: %s. Press Ctrl+C to stop.", GEMINI_MODEL)
+    logger.info("Bot starting with DeepSeek Model: %s. Press Ctrl+C to stop.", DEEPSEEK_MODEL)
 
     # PTB's run_polling() calls loop.run_forever() internally, which conflicts
     # with our already-running loop. We use the explicit lifecycle API instead.
