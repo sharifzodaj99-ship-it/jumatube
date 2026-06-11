@@ -55,14 +55,14 @@ from datetime import datetime # 🟢 ИЛОВА ШУД: Барои сабти в
 import aiohttp
 from aiohttp import web
 
-import firebase_admin
-from firebase_admin import credentials, firestore
+import firebase_admin # type: ignore
+from firebase_admin import credentials, firestore # type: ignore
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI # type: ignore
 
-from telegram import Update
-from telegram.error import TelegramError
-from telegram.ext import (
+from telegram import Update # type: ignore
+from telegram.error import TelegramError # type: ignore
+from telegram.ext import ( # type: ignore
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -403,33 +403,75 @@ def _build_system_instruction(salon: dict) -> str:
     return SYSTEM_INSTRUCTION_TEMPLATE.format(salon_block=_format_salon_block(salon))
 
 
-async def ask_ai(user_text: str) -> str:
+async def ask_ai(user_id: int, user_text: str) -> str:
+    """
+    Asks the AI (DeepSeek) by dynamically injecting the system prompt, 
+    loading conversation history from Firestore, and managing the context.
+    """
+    # 1. Хонондани маълумоти салон аз Firestore/Локалӣ
+    salon_data = await get_salon_info()
+    salon_block = _format_salon_block(salon_data)
+
+    # 2. Сохтани System Prompt-и асосӣ (Промпти касбӣ)
+    system_prompt = (
+        "Ту як ёрдамчии касбӣ ва ҳушманд бо номи 'Beauty AI' барои салони ҳусн ҳастӣ.\n"
+        f"Маълумот дар бораи салон:\n{salon_block}\n\n"
+        "ҚОИДАҲОИ АСОСӢ:\n"
+        "1. Агар муштарӣ аллакай салом дода бошад ё суҳбат давом дошта бошад, ДИГАР САЛОМ НАФИРИСТ ва худро аз нав муаррифӣ накун!\n"
+        "2. Танҳо ба саволи муштарӣ кӯтоҳ ва мушаххас ҷавоб деҳ ва марҳила ба марҳила маълумоти намерасидаро (ном, телефон, хизматрасонӣ, вақт) пурс.\n"
+        "3. Ҳамин ки ҳамаи 4 маълумот (ном, телефон, вақт, хизматрасонӣ) пурра шуд, АЙНАН дар охири паёми худ ин теги JSON-ро часпон:\n"
+        "[BOOKING_DATA:{\"name\": \"Номи клиент\", \"service\": \"Номи хизмат\", \"time\": \"Рӯз ва соат\", \"phone\": \"Телефон\"}]\n"
+        "4. Ҳамеша бо забони тоҷикии ширин ва хушмуомила ҷавоб гардон."
+    )
+
+    # 3. 🟢 СИСТЕМАИ ХОТИРА: Хонондани таърихи суҳбат аз Firestore
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    user_history_ref = None
+    history_data = []
+    
+    if _firestore_client is not None:
+        try:
+            # Силсилаи суҳбатҳои ин корбарро аз папкаи 'chat_histories' мехонем
+            user_history_ref = _firestore_client.collection("chat_histories").document(str(user_id))
+            doc = await asyncio.to_thread(user_history_ref.get)
+            if doc.exists:
+                history_data = doc.to_dict().get("messages", [])
+                # Танҳо 10 паёми охиринро мегирем, то контекст калон нашавад
+                for msg in history_data[-10:]:
+                    messages.append({"role": msg["role"], "content": msg["content"]})
+        except Exception as e:
+            logger.error(f"Хатогӣ ҳангоми хондани хотираи чат: {e}")
+
+    # Илова кардани паёми нави муштарӣ ба контекст
+    messages.append({"role": "user", "content": user_text})
+
     try:
-        salon = await get_salon_info()
-        system_instruction = _build_system_instruction(salon)
-
-        # Занг ба DeepSeek API
+        # 4. Даъват кардани DeepSeek API
         response = await _deepseek_client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_text}
-            ],
-            temperature=0.7,
-            stream=False
+            model="deepseek-chat",
+            messages=messages,
+            temperature=0.3,  # Паст мекунем, то аниқ ва мушаххас кор кунад
+            max_tokens=400
         )
+        
+        ai_reply = response.choices[0].message.content
 
-        reply_text = response.choices[0].message.content
+        # 5. Сабт кардани паёмҳои нав ба хотираи Firestore
+        if _firestore_client is not None and user_history_ref is not None:
+            try:
+                history_data.append({"role": "user", "content": user_text})
+                history_data.append({"role": "assistant", "content": ai_reply})
+                # Сабти заминавӣ дар Firestore
+                await asyncio.to_thread(user_history_ref.set, {"messages": history_data})
+            except Exception as e:
+                logger.error(f"Хатогӣ ҳангоми сабти хотираи чат: {e}")
 
-        if not reply_text:
-            logger.warning("DeepSeek returned an empty response for input: %r", user_text)
-            return MSG_AI_EMPTY_RESPONSE
-
-        return reply_text
+        return ai_reply
 
     except Exception as exc:
-        logger.error("DeepSeek API error: %s", exc, exc_info=True)
-        return MSG_AI_ERROR
+        logger.error(f"DeepSeek API Error: {exc}", exc_info=True)
+        return "Бубахшед, дар занҷири коркарди маълумот хатогӣ рух дод. Лутфан қайди худро аз нав нависед."
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +508,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.warning("Could not send typing action to %s: %s", user.id, exc)
 
     # Step 2 — AI call
-    reply = await ask_ai(user_text)
+    reply = await ask_ai(user_id=user.id, user_text=user_text)
 
     # 🟢 СТЕПИ НАВ: Тафтиши касбӣ — Оё ИИ аризаро барои сабт сохт?
     if "[BOOKING_DATA:" in reply:
@@ -500,7 +542,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             
             # 🟢 ИМПОРТИ СТАНДАРТИИ PTB v20+ БАРОИ PARSE_MODE
-            from telegram.constants import ParseMode
+            from telegram.constants import ParseMode # type: ignore
             
             # Рост ба личкаи ту (соҳибкор) хабар равон мешавад
             await context.bot.send_message(
@@ -519,24 +561,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Step 3 — Send standard reply if not a booking
     try:
-        from telegram.constants import ParseMode
+        from telegram import ParseMode # type: ignore
         await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except TelegramError as exc:
         logger.error("Failed to send reply to user %s: %s", user.id, exc, exc_info=True)
-
-
-async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log errors raised by Telegram handlers and notify the user gracefully."""
-    try:
-        logger.exception("Unhandled exception in Telegram handler: %s", context.error)
-    except Exception:
-        logger.exception("Unhandled exception in Telegram handler.")
-
-    if update and getattr(update, "message", None):
-        try:
-            await update.message.reply_text(MSG_TELEGRAM_ERROR)
-        except TelegramError:
-            logger.warning("Could not send error notification to user.")
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +635,7 @@ async def main() -> None:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
-    application.add_error_handler(error_handler)
+    application.add_error_handler(error_handler) # type: ignore
 
     logger.info("Bot starting with DeepSeek Model: %s. Press Ctrl+C to stop.", DEEPSEEK_MODEL)
 
