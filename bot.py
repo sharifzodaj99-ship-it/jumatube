@@ -446,8 +446,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Failed to send welcome to user %s: %s", user.id, exc)
 
 
-# 🔴 ИН ҶО ID-И ТЕЛЕГРАМИ ХУДРО ГУЗОР (аз @userinfobot), ТО ЗАКАЗҲО БА ТУ РАВАНД!
-ADMIN_CHAT_ID: int = 8122251511  
+# # 🟢 ИСЛОҲИ КАСБӢ: Хонондани ID аз Env-Var (Render) ва нигоҳ доштани он ҳамчун сатр/адад барои амният
+ADMIN_CHAT_ID: str = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "8122251511")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -499,13 +499,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"💬 **Телеграм:** @{user.username or 'нест'}"
             )
             
+            # 🟢 ИМПОРТИ СТАНДАРТИИ PTB v20+ БАРОИ PARSE_MODE
+            from telegram.constants import ParseMode
+            
             # Рост ба личкаи ту (соҳибкор) хабар равон мешавад
-            from telegram import ParseMode
             await context.bot.send_message(
-    chat_id=ADMIN_CHAT_ID, 
-    text=admin_msg, 
-    parse_mode=ParseMode.MARKDOWN  # Мана ҳамин хел бехато кор мекунад
-)
+                chat_id=ADMIN_CHAT_ID, 
+                text=admin_msg, 
+                parse_mode=ParseMode.MARKDOWN
+            )
             
             # Ба мизоҷ танҳо матни тозаи ИИ-ро нишон медиҳем (бе кодҳо)
             await update.message.reply_text(clean_reply, parse_mode=ParseMode.MARKDOWN)
@@ -517,24 +519,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Step 3 — Send standard reply if not a booking
     try:
-        from telegram import ParseMode
+        from telegram.constants import ParseMode
         await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except TelegramError as exc:
         logger.error("Failed to send reply to user %s: %s", user.id, exc, exc_info=True)
 
 
-# ИДОРАКУНАНДАИ ХАТОГИҲО (БА ИН КОР ДОР НАШАВ)
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Global PTB error handler — catches anything that slips through individual
-    try-excepts (e.g. network timeouts during polling).
-    """
-    logger.error(
-        "PTB unhandled exception while processing update %s: %s",
-        update,
-        context.error,
-        exc_info=context.error,
-    )
+async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log errors raised by Telegram handlers and notify the user gracefully."""
+    try:
+        logger.exception("Unhandled exception in Telegram handler: %s", context.error)
+    except Exception:
+        logger.exception("Unhandled exception in Telegram handler.")
+
+    if update and getattr(update, "message", None):
+        try:
+            await update.message.reply_text(MSG_TELEGRAM_ERROR)
+        except TelegramError:
+            logger.warning("Could not send error notification to user.")
 
 
 # ---------------------------------------------------------------------------
