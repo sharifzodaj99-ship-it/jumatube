@@ -47,6 +47,10 @@ import asyncio
 import logging
 import os
 import sys
+import base64
+import json
+import sqlite3               # 🟢 ИЛОВА ШУД: Барои кор бо базаи SQLite-и заказҳо
+from datetime import datetime # 🟢 ИЛОВА ШУД: Барои сабти вақти аниқи аризаҳо
 
 import aiohttp
 from aiohttp import web
@@ -206,7 +210,7 @@ MSG_AI_ERROR = (
 MSG_TELEGRAM_ERROR = "Хатогии дохилӣ рух дод. Лутфан дубора кӯшиш кунед."
 
 # --- System instruction template -------------------------------------------
-# The {salon_block} placeholder is filled at runtime by build_system_instruction().
+# Огоҳӣ барои ИИ: Фармон ва қоидаи баргардонидани JSON барои заказҳо
 SYSTEM_INSTRUCTION_TEMPLATE = """
 Ту ассистенти касбии салони зебоӣ ҳастӣ. Вазифаи ту кӯмак ба мизоҷон дар бораи
 хизматрасониҳо, нархҳо ва вақти кор мебошад.
@@ -215,6 +219,12 @@ SYSTEM_INSTRUCTION_TEMPLATE = """
 - Ҷавобҳо кӯтоҳ, равшан ва фаҳмо бошанд.
 - Забони хушмуомила ва касбӣ истифода бар.
 - Агар саволе берун аз салон бошад, мулоимона гӯй, ки ин берун аз ихтисоси ман аст.
+
+ҚОИДАИ ҚАТЪИИ ЗАПИС КАРДАНИ КЛИЕНТ:
+Ҳамин ки клиент хоҳиши сабти ном кардан (запись) кард ва маълумотро дод (Ном, Хидмат, Вақт/Рӯз ва Телефон), ту ба ӯ вежливо тасдиқ мекунӣ.
+Дар АМАН КУНҶИ (ОХИРИ) ҷавоби худ, ту МУТЛАҚО ВА ОБЯЗАТЕЛЬНО бояд ин теги техникии JSON-ро ТАНҲО дар як сатр илова кунӣ (агар ягон маълумот набошад, ба ҷояш null гузор):
+
+[BOOKING_DATA:{{"name": "Номи клиент", "service": "Номи хидмат", "time": "Вақт ва рӯз", "phone": "Рақами телефон"}}]
 
 Маълумоти салон:
 {salon_block}
@@ -326,6 +336,40 @@ async def get_salon_info() -> dict:
             exc_info=True,
         )
         return _LOCAL_SALON_DATA
+    # --- ИЛОВАИ НАВ ДАР SECTION 3: БАЗАИ МАЪЛУМОТИ ЗАКАЗҲО ---
+
+def init_booking_db() -> None:
+    """Сохтани базаи маълумоти локалии SQLite барои сабти заказҳо."""
+    conn = sqlite3.connect("salon_bookings.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS salon_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            client_name TEXT,
+            service TEXT,
+            booking_time TEXT,
+            phone TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    logger.info("Базаи маълумоти SQLite барои заказҳо омода аст.")
+
+def save_booking_to_db(user_id: int, username: str, name: str, service: str, time: str, phone: str) -> int:
+    """Сабт кардани аризаи мизоҷ дар база ва баргардонидани ID-и ариза."""
+    conn = sqlite3.connect("salon_bookings.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO salon_orders (user_id, username, client_name, service, booking_time, phone, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (user_id, username, name, service, time, phone, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    booking_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return booking_id
 # ---------------------------------------------------------------------------
 # SECTION 4 — AI HELPERS
 # ---------------------------------------------------------------------------
@@ -402,17 +446,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Failed to send welcome to user %s: %s", user.id, exc)
 
 
+# 🔴 ИН ҶО ID-И ТЕЛЕГРАМИ ХУДРО ГУЗОР (аз @userinfobot), ТО ЗАКАЗҲО БА ТУ РАВАНД!
+ADMIN_CHAT_ID: int = 8122251511  
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle every incoming text message.
-
-    Flow:
-      1. Send a "typing…" indicator (non-blocking).
-      2. Call Gemini async (non-blocking via asyncio.to_thread inside ask_ai).
-      3. Reply with the result.
-
-    Each step is independently guarded so a Telegram API hiccup on step 1
-    doesn't prevent the user from receiving a reply at step 3.
+    Handle every incoming text message with Professional AI-Driven Booking.
     """
     user = update.effective_user
     user_text = update.message.text
@@ -429,19 +468,66 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Step 2 — AI call
     reply = await ask_ai(user_text)
 
-    # Step 3 — send reply
+    # 🟢 СТЕПИ НАВ: Тафтиши касбӣ — Оё ИИ аризаро барои сабт сохт?
+    if "[BOOKING_DATA:" in reply:
+        try:
+            # Ҷудо кардани матни муштарӣ аз коди махфии JSON
+            parts = reply.split("[BOOKING_DATA:")
+            clean_reply = parts[0].strip()
+            json_str = parts[1].split("]")[0].strip()
+            
+            data = json.loads(json_str)
+            
+            # Сабт дар база дар заминаи алоҳида (Non-blocking DB write via asyncio.to_thread)
+            b_id = await asyncio.to_thread(
+                save_booking_to_db,
+                user_id=user.id,
+                username=user.username or "скрыт",
+                name=data.get("name"),
+                service=data.get("service"),
+                time=data.get("time"),
+                phone=data.get("phone")
+            )
+            
+            # Сохтани шаблони огоҳиномаи касбӣ барои Соҳибкор
+            admin_msg = (
+                f"🔔 **ЗАПИСИ НАВ АЗ AI (ID: {b_id})**\n\n"
+                f"👤 **Клиент:** {data.get('name')}\n"
+                f"✨ **Хизматрасонӣ:** {data.get('service')}\n"
+                f"📅 **Вақт ва Рӯз:** {data.get('time')}\n"
+                f"📞 **Телефон:** {data.get('phone')}\n"
+                f"💬 **Телеграм:** @{user.username or 'нест'}"
+            )
+            
+            # Рост ба личкаи ту (соҳибкор) хабар равон мешавад
+            from telegram import ParseMode
+            await context.bot.send_message(
+    chat_id=ADMIN_CHAT_ID, 
+    text=admin_msg, 
+    parse_mode=ParseMode.MARKDOWN  # Мана ҳамин хел бехато кор мекунад
+)
+            
+            # Ба мизоҷ танҳо матни тозаи ИИ-ро нишон медиҳем (бе кодҳо)
+            await update.message.reply_text(clean_reply, parse_mode=ParseMode.MARKDOWN)
+            return
+
+        except Exception as exc:
+            logger.error("Хатогӣ дар парсинги JSON-и заказ: %s", exc, exc_info=True)
+            reply = reply.split("[BOOKING_DATA:")[0].strip()
+
+    # Step 3 — Send standard reply if not a booking
     try:
-        await update.message.reply_text(reply)
+        from telegram import ParseMode
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except TelegramError as exc:
         logger.error("Failed to send reply to user %s: %s", user.id, exc, exc_info=True)
 
 
+# ИДОРАКУНАНДАИ ХАТОГИҲО (БА ИН КОР ДОР НАШАВ)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Global PTB error handler — catches anything that slips through individual
     try-excepts (e.g. network timeouts during polling).
-
-    Logs the exception but does NOT re-raise, so the bot keeps running.
     """
     logger.error(
         "PTB unhandled exception while processing update %s: %s",
