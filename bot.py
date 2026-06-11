@@ -373,10 +373,10 @@ def save_booking_to_db(user_id: int, username: str, name: str, service: str, tim
     conn.close()
     return booking_id
 # ---------------------------------------------------------------------------
-# SECTION 4 — AI HELPERS
+# SECTION 4 — AI HELPERS & MEMORY
 # ---------------------------------------------------------------------------
 
-# Instantiate the Gemini client once at module level (thread-safe, reusable).
+# Instantiate the Gemini/DeepSeek client once at module level
 _deepseek_client = AsyncOpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com"
@@ -384,11 +384,7 @@ _deepseek_client = AsyncOpenAI(
 
 
 def _format_salon_block(salon: dict) -> str:
-    """
-    Convert the salon dict into a human-readable block for the system prompt.
-
-    Separated from the template so it can be unit-tested independently.
-    """
+    """Convert the salon dict into a human-readable block for the system prompt."""
     services_str = "\n".join(
         f"  - {name}: {price}" for name, price in salon.get("services", {}).items()
     )
@@ -400,24 +396,17 @@ def _format_salon_block(salon: dict) -> str:
     )
 
 
-def _build_system_instruction(salon: dict) -> str:
-    """Return the fully rendered system instruction string."""
-    return SYSTEM_INSTRUCTION_TEMPLATE.format(salon_block=_format_salon_block(salon))
-
-
 async def ask_ai(user_id: int, user_text: str) -> str:
     """
     Asks the AI (DeepSeek) by dynamically injecting the system prompt, 
     loading conversation history from Firestore, and managing the context.
     """
-    # 1. Хонондани маълумоти салон аз Firestore/Локалӣ
     salon_data = await get_salon_info()
     salon_block = _format_salon_block(salon_data)
 
-    # 2. Сохтани System Prompt-и асосӣ (Промпти касбӣ)
     system_prompt = (
         "Ту як ёрдамчии касбӣ ва ҳушманд бо номи 'Beauty AI' барои салони ҳусн ҳастӣ.\n"
-        f"Маълумот дар бораи салон:\n{salon_block}\n\n"
+        f"Маълумот дар бораи saлон:\n{salon_block}\n\n"
         "ҚОИДАҲОИ АСОСӢ:\n"
         "1. Агар муштарӣ аллакай салом дода бошад ё суҳбат давом дошта бошад, ДИГАР САЛОМ НАФИРИСТ ва худро аз нав муаррифӣ накун!\n"
         "2. Танҳо ба саволи муштарӣ кӯтоҳ ва мушаххас ҷавоб деҳ ва марҳила ба марҳила маълумоти намерасидаро (ном, телефон, хизматрасонӣ, вақт) пурс.\n"
@@ -426,45 +415,36 @@ async def ask_ai(user_id: int, user_text: str) -> str:
         "4. Ҳамеша бо забони тоҷикии ширин ва хушмуомила ҷавоб гардон."
     )
 
-    # 3. 🟢 СИСТЕМАИ ХОТИРА: Хонондани таърихи суҳбат аз Firestore
     messages = [{"role": "system", "content": system_prompt}]
-    
     user_history_ref = None
     history_data = []
     
     if _firestore_client is not None:
         try:
-            # Силсилаи суҳбатҳои ин корбарро аз папкаи 'chat_histories' мехонем
             user_history_ref = _firestore_client.collection("chat_histories").document(str(user_id))
             doc = await asyncio.to_thread(user_history_ref.get)
             if doc.exists:
                 history_data = doc.to_dict().get("messages", [])
-                # Танҳо 10 паёми охиринро мегирем, то контекст калон нашавад
                 for msg in history_data[-10:]:
                     messages.append({"role": msg["role"], "content": msg["content"]})
         except Exception as e:
             logger.error(f"Хатогӣ ҳангоми хондани хотираи чат: {e}")
 
-    # Илова кардани паёми нави муштарӣ ба контекст
     messages.append({"role": "user", "content": user_text})
 
     try:
-        # 4. Даъват кардани DeepSeek API
         response = await _deepseek_client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
-            temperature=0.3,  # Паст мекунем, то аниқ ва мушаххас кор кунад
+            temperature=0.3,
             max_tokens=400
         )
-        
         ai_reply = response.choices[0].message.content
 
-        # 5. Сабт кардани паёмҳои нав ба хотираи Firestore
         if _firestore_client is not None and user_history_ref is not None:
             try:
                 history_data.append({"role": "user", "content": user_text})
                 history_data.append({"role": "assistant", "content": ai_reply})
-                # Сабти заминавӣ дар Firestore
                 await asyncio.to_thread(user_history_ref.set, {"messages": history_data})
             except Exception as e:
                 logger.error(f"Хатогӣ ҳангоми сабти хотираи чат: {e}")
@@ -477,31 +457,17 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# SECTION 5 — TELEGRAM HANDLERS
+# SECTION 5 — HANDLERS & PTB ENTRY POINT
 # ---------------------------------------------------------------------------
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /start command."""
-    user = update.effective_user
-    logger.info("User %s (%s) started the bot.", user.id, user.username)
-    try:
-        await update.message.reply_text(MSG_WELCOME)
-    except TelegramError as exc:
-        logger.error("Failed to send welcome to user %s: %s", user.id, exc)
-
-
-# # 🟢 ИСЛОҲИ КАСБӢ: Хонондани ID аз Env-Var (Render) ва нигоҳ доштани он ҳамчун сатр/адад барои амният
 ADMIN_CHAT_ID: str = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "8122251511")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handle every incoming text message with Professional AI-Driven Booking.
-    """
+    """Handle every incoming text message with Professional AI-Driven Booking."""
     user = update.effective_user
     user_text = update.message.text
     logger.info("Message from %s (%s): %r", user.id, user.username, user_text)
 
-    # Step 1 — typing indicator (best-effort; ignore failures)
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, action="typing"
@@ -509,20 +475,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except TelegramError as exc:
         logger.warning("Could not send typing action to %s: %s", user.id, exc)
 
-    # Step 2 — AI call
+    # Даъвати функсияи ИИ бо фиристодани ID-и корбар
     reply = await ask_ai(user_id=user.id, user_text=user_text)
 
-    # 🟢 СТЕПИ НАВ: Тафтиши касбӣ — Оё ИИ аризаро барои сабт сохт?
     if "[BOOKING_DATA:" in reply:
         try:
-            # Ҷудо кардани матни муштарӣ аз коди махфии JSON
             parts = reply.split("[BOOKING_DATA:")
             clean_reply = parts[0].strip()
             json_str = parts[1].split("]")[0].strip()
             
             data = json.loads(json_str)
             
-            # Сабт дар база дар заминаи алоҳида (Non-blocking DB write via asyncio.to_thread)
             b_id = await asyncio.to_thread(
                 save_booking_to_db,
                 user_id=user.id,
@@ -533,7 +496,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 phone=data.get("phone")
             )
             
-            # Сохтани шаблони огоҳиномаи касбӣ барои Соҳибкор
             admin_msg = (
                 f"🔔 **ЗАПИСИ НАВ АЗ AI (ID: {b_id})**\n\n"
                 f"👤 **Клиент:** {data.get('name')}\n"
@@ -543,17 +505,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"💬 **Телеграм:** @{user.username or 'нест'}"
             )
             
-            # 🟢 ИМПОРТИ СТАНДАРТИИ PTB v20+ БАРОИ PARSE_MODE
             from telegram.constants import ParseMode # type: ignore
-            
-            # Рост ба личкаи ту (соҳибкор) хабар равон мешавад
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID, 
                 text=admin_msg, 
                 parse_mode=ParseMode.MARKDOWN
             )
             
-            # Ба мизоҷ танҳо матни тозаи ИИ-ро нишон медиҳем (бе кодҳо)
             await update.message.reply_text(clean_reply, parse_mode=ParseMode.MARKDOWN)
             return
 
@@ -561,12 +519,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error("Хатогӣ дар парсинги JSON-и заказ: %s", exc, exc_info=True)
             reply = reply.split("[BOOKING_DATA:")[0].strip()
 
-    # Step 3 — Send standard reply if not a booking
     try:
-        from telegram import ParseMode # type: ignore
+        from telegram.constants import ParseMode # type: ignore
         await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
     except TelegramError as exc:
         logger.error("Failed to send reply to user %s: %s", user.id, exc, exc_info=True)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global PTB error handler."""
+    logger.error(
+        "PTB unhandled exception while processing update %s: %s",
+        update,
+        context.error,
+        exc_info=context.error,
+    )
 
 
 # ---------------------------------------------------------------------------
