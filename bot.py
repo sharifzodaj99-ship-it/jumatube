@@ -361,16 +361,40 @@ def init_booking_db() -> None:
     logger.info("Базаи маълумоти SQLite барои заказҳо омода аст.")
 
 def save_booking_to_db(user_id: int, username: str, name: str, service: str, time: str, phone: str) -> int:
-    """Сабт кардани аризаи мизоҷ дар база ва баргардонидани ID-и ариза."""
+    """
+    Saves a booking to the local SQLite database. 
+    Automatically creates the table if it does not exist.
+    """
+    import sqlite3
+    
+    # Пайвастшавӣ ба базаи локалӣ
     conn = sqlite3.connect("salon_bookings.db")
     cursor = conn.cursor()
+    
+    # 🟢 ИСЛОҲИ КРИТИКӢ: Агар таблица набошад, онро автоматӣ месозем
     cursor.execute("""
-        INSERT INTO salon_orders (user_id, username, client_name, service, booking_time, phone, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, username, name, service, time, phone, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    booking_id = cursor.lastrowid
+        CREATE TABLE IF NOT EXISTS salon_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            name TEXT,
+            service TEXT,
+            time TEXT,
+            phone TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Сабти маълумоти заказ
+    cursor.execute("""
+        INSERT INTO salon_orders (user_id, username, name, service, time, phone)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, username, name, service, time, phone))
+    
     conn.commit()
+    booking_id = cursor.lastrowid
     conn.close()
+    
     return booking_id
 # ---------------------------------------------------------------------------
 # SECTION 4 — AI HELPERS & MEMORY
