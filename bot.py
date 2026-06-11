@@ -256,39 +256,41 @@ _firestore_client = None
 
 def _init_firebase() -> None:
     """
-    Initialise the Firebase Admin SDK using a secure Base64 encoded environment variable.
-    This bypasses all Render string escaping issues and avoids formatting corruption.
+    Initialise the Firebase Admin SDK using a direct JSON string from environment variables.
+    Fails gracefully to local fallback if config is missing or invalid.
     """
     global _firestore_client  # noqa: PLW0603
 
-    # Сатри яклухти Base64-ро аз Render мехонем
-    base64_config = os.environ.get("FIREBASE_CONFIG_BASE64", "")
-    if not base64_config:
-        logger.warning("FIREBASE_CONFIG_BASE64 is not set. Using local fallback.")
+    # 🟢 АКУН АЗ МАТНИ ОДДИИ JSON МЕХОНЕМ (БЕ BASE64)
+    raw_json = os.environ.get("FIREBASE_CONFIG_JSON", "")
+    if not raw_json:
+        logger.warning("FIREBASE_CONFIG_JSON соз карда нашудааст. Firestore ғайрифаъол аст.")
         return
 
     try:
-        # Декод кардани сатр ба байтҳо ва табдил ба дикшенерии аслӣ
-        decoded_bytes = base64.b64decode(base64_config)
-        cred_dict = json.loads(decoded_bytes.decode("utf-8"))
+        # Коркарди матни JSON
+        cred_dict = json.loads(raw_json)
 
-        # Пайвастшавӣ ба Firebase бо дикшенерии аслӣ
+        # Ислоҳи аломатҳои сатри нав дар калиди махфи
+        if "private_key" in cred_dict:
+            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+
         cred = credentials.Certificate(cred_dict)
 
         try:
             firebase_admin.initialize_app(cred)
         except ValueError:
-            logger.debug("Firebase app already initialised; reusing existing instance.")
+            logger.debug("Firebase аллакай фаъол аст; истифодаи инстансияи мавҷуда.")
 
         _firestore_client = firestore.client()
         logger.info(
-            "Firebase Admin SDK initialised successfully via Base64 (project: %s).",
+            "Firebase Admin SDK бомуваффақият фаъол шуд (Project: %s).",
             cred_dict.get("project_id", "unknown"),
         )
 
     except Exception as exc:
         logger.error(
-            "Firebase Base64 initialisation failed — Firestore disabled. Error: %s",
+            "Хатогӣ дар фаъолкунии Firebase — Firestore ғайрифаъол шуд. Error: %s",
             exc,
             exc_info=True,
         )
