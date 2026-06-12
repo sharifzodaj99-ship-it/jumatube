@@ -44,24 +44,22 @@ Dependencies (pip install):
 """
 
 import asyncio
+import json
 import logging
 import os
+import sqlite3  # 🟢 ИЛОВА ШУД: Барои кор бо базаи SQLite-и заказҳо
 import sys
-import json
-import sqlite3               # 🟢 ИЛОВА ШУД: Барои кор бо базаи SQLite-и заказҳо
-from datetime import datetime # 🟢 ИЛОВА ШУД: Барои сабти вақти аниқи аризаҳо
+from datetime import datetime  # 🟢 ИЛОВА ШУД: Барои сабти вақти аниқи аризаҳо
+from multiprocessing import context
 
 import aiohttp
+import firebase_admin  # type: ignore
 from aiohttp import web
-
-import firebase_admin # type: ignore
-from firebase_admin import credentials, firestore # type: ignore
-
-from openai import AsyncOpenAI # type: ignore
-
-from telegram import Update # type: ignore
-from telegram.error import TelegramError # type: ignore
-from telegram.ext import ( # type: ignore
+from firebase_admin import credentials, firestore  # type: ignore
+from openai import AsyncOpenAI  # type: ignore
+from telegram import Update  # type: ignore
+from telegram.error import TelegramError  # type: ignore
+from telegram.ext import (  # type: ignore
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -341,21 +339,18 @@ async def get_salon_info() -> dict:
 
 def init_booking_db() -> None:
     """Сохтани базаи маълумоти локалии SQLite барои сабти заказҳо."""
-    conn = sqlite3.connect(
-    "salon_bookings.db",
-    timeout=30
-)
+    conn = sqlite3.connect("salon_bookings.db", timeout=30)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS salon_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             username TEXT,
-            client_name TEXT,
+            name TEXT,        -- ✅ Ислоҳ шуд (ба ҷои client_name)
             service TEXT,
-            booking_time TEXT,
+            time TEXT,        -- ✅ Ислоҳ шуд (ба ҷои booking_time)
             phone TEXT,
-            created_at TEXT
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -572,32 +567,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"💬 Telegram: @{user.username or 'нест'}"
             )
 
+            # ✅ Шакли касбӣ ва бехато:
             await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=admin_msg
-            )
+    chat_id=int(ADMIN_CHAT_ID),  # Адади бутун (Integer) кардани ID
+    text=admin_msg
+)
 
             await update.message.reply_text(clean_reply)
             return
 
         except Exception as exc:
-            logger.error(
-                "Booking JSON processing error: %s",
-                exc,
-                exc_info=True
-            )
-
+            logger.error("Booking JSON processing error: %s", exc)
             reply = reply.split("[BOOKING_DATA:")[0].strip()
+            # Сатри тиллоӣ: Агар хатогӣ шавад, паёми тозаро мефиристем, то бот хомӯш намонад
+            await update.message.reply_text(reply)
+            return
 
+    # Ин блок барои паёмҳои оддӣ аст (вақте ки теги JSON умуман нест)
     try:
         await update.message.reply_text(reply)
     except TelegramError as exc:
-        logger.error(
-            "Failed to send reply to user %s: %s",
-            user.id,
-            exc,
-            exc_info=True
-        )
+        logger.error("Failed to send reply to user: %s", exc)
 
 
 async def error_handler(
