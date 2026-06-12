@@ -252,45 +252,30 @@ _firestore_client = None
 
 
 def _init_firebase() -> None:
-    """
-    Initialise the Firebase Admin SDK using a direct JSON string from environment variables.
-    Fails gracefully to local fallback if config is missing or invalid.
-    """
-    global _firestore_client  # noqa: PLW0603
-
-    # 🟢 АКУН АЗ МАТНИ ОДДИИ JSON МЕХОНЕМ (БЕ BASE64)
-    raw_json = os.environ.get("FIREBASE_CONFIG_JSON", "")
-    if not raw_json:
-        logger.warning("FIREBASE_CONFIG_JSON соз карда нашудааст. Firestore ғайрифаъол аст.")
+    """Initialises Firebase Admin SDK cleanly using the Render Secret File."""
+    global _firestore_client
+    
+    # Роҳи файл ба Secret File-и дар Render сохтаамон
+    cred_file_path = "google_creds.json"
+    
+    # Тафтиш мекунем, ки оё файл дар сервер мавҷуд аст ё на
+    if not os.path.exists(cred_file_path):
+        logger.warning("Файли google_creds.json наёфт. Хотираи кӯтоҳмуддати локалӣ фаъол шуд.")
         return
 
     try:
-        # Коркарди матни JSON
-        cred_dict = json.loads(raw_json)
-
-        # Ислоҳи аломатҳои сатри нав дар калиди махфи
-        if "private_key" in cred_dict:
-            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
-
-        cred = credentials.Certificate(cred_dict)
-
+        # Файли JSON-ро мустақим ба SDK-и Google месупорем (Хеле бехатар ва касбӣ)
+        cred = credentials.Certificate(cred_file_path)
+        
         try:
             firebase_admin.initialize_app(cred)
         except ValueError:
-            logger.debug("Firebase аллакай фаъол аст; истифодаи инстансияи мавҷуда.")
+            pass  # Агар аллакай инстансия сохта шуда бошад
 
         _firestore_client = firestore.client()
-        logger.info(
-            "Firebase Admin SDK бомуваффақият фаъол шуд (Project: %s).",
-            cred_dict.get("project_id", "unknown"),
-        )
-
+        logger.info("Firebase Admin SDK (Cloud Firestore) бомуваффақият тавассути Secret File фаъол шуд!")
     except Exception as exc:
-        logger.error(
-            "Хатогӣ дар фаъолкунии Firebase — Firestore ғайрифаъол шуд. Error: %s",
-            exc,
-            exc_info=True,
-        )
+        logger.error("Хатогии касбӣ дар фаъолкунии Firebase аз файл: %s", exc, exc_info=True)
 
 
 async def get_salon_info() -> dict:
