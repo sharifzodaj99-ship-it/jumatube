@@ -47,7 +47,6 @@ import asyncio
 import logging
 import os
 import sys
-import base64
 import json
 import sqlite3               # 🟢 ИЛОВА ШУД: Барои кор бо базаи SQLite-и заказҳо
 from datetime import datetime # 🟢 ИЛОВА ШУД: Барои сабти вақти аниқи аризаҳо
@@ -199,7 +198,7 @@ def _build_firebase_credentials() -> dict | None:
 # --- User-facing message constants -----------------------------------------
 # Keeping every reply string here makes translation/A-B testing trivial.
 MSG_WELCOME = (
-    "Салом! 👋 Ман AI ассистенти касбии салони зебоӣ ҳастам.\n"
+    "Салом! 👋 Ман мушовири салони зебоӣ ҳастам.\n"
     "Дар бораи хизматрасониҳо, нархҳо ва вақти кории мо савол диҳед. Чӣ хизмат кунам?"
 )
 MSG_AI_EMPTY_RESPONSE = "Бубахшед, AI дар ин лаҳза ҷавоб дода натавонист. Лутфан дубора кӯшиш кунед."
@@ -342,7 +341,10 @@ async def get_salon_info() -> dict:
 
 def init_booking_db() -> None:
     """Сохтани базаи маълумоти локалии SQLite барои сабти заказҳо."""
-    conn = sqlite3.connect("salon_bookings.db")
+    conn = sqlite3.connect(
+    "salon_bookings.db",
+    timeout=30
+)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS salon_orders (
@@ -469,9 +471,11 @@ async def ask_ai(user_id: int, user_text: str) -> str:
             try:
                 history_data.append({"role": "user", "content": user_text})
                 history_data.append({"role": "assistant", "content": ai_reply})
+                history_data = history_data[-20:]
                 await asyncio.to_thread(user_history_ref.set, {"messages": history_data})
             except Exception as e:
                 logger.error(f"Хатогӣ ҳангоми сабти хотираи чат: {e}")
+            
 
         return ai_reply
 
@@ -484,32 +488,71 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 # SECTION 5 — HANDLERS & PTB ENTRY POINT
 # ---------------------------------------------------------------------------
 
-ADMIN_CHAT_ID: str = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "8122251511")
+ADMIN_CHAT_ID = int(
+    os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "8122251511")
+)
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Салом! 👋 Ба Beauty AI хуш омадед.\n\n"
+        "Барои гирифтани маълумот дар бораи хизматрасониҳо ё сабти ном паём нависед."
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle every incoming text message with Professional AI-Driven Booking."""
     user = update.effective_user
     user_text = update.message.text
-    logger.info("Message from %s (%s): %r", user.id, user.username, user_text)
+
+    logger.info(
+        "Message from %s (%s): %r",
+        user.id,
+        user.username,
+        user_text
+    )
 
     try:
         await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id, action="typing"
+            chat_id=update.effective_chat.id,
+            action="typing"
         )
     except TelegramError as exc:
-        logger.warning("Could not send typing action to %s: %s", user.id, exc)
+        logger.warning(
+            "Could not send typing action to %s: %s",
+            user.id,
+            exc
+        )
 
-    # Даъвати функсияи ИИ бо фиристодани ID-и корбар
-    reply = await ask_ai(user_id=user.id, user_text=user_text)
+    reply = await ask_ai(
+        user_id=user.id,
+        user_text=user_text
+    )
 
     if "[BOOKING_DATA:" in reply:
         try:
             parts = reply.split("[BOOKING_DATA:")
             clean_reply = parts[0].strip()
             json_str = parts[1].split("]")[0].strip()
-            
+
+            if not json_str:
+                raise ValueError("Empty booking JSON")
+
+            if not json_str.startswith("{"):
+                raise ValueError("Invalid booking JSON format")
+
             data = json.loads(json_str)
-            
+
+            required_fields = [
+                "name",
+                "service",
+                "time",
+                "phone"
+            ]
+
+            for field in required_fields:
+                if not data.get(field):
+                    raise ValueError(
+                        f"Missing required field: {field}"
+                    )
+
             b_id = await asyncio.to_thread(
                 save_booking_to_db,
                 user_id=user.id,
@@ -519,39 +562,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 time=data.get("time"),
                 phone=data.get("phone")
             )
-            
+
             admin_msg = (
-                f"🔔 **ЗАПИСИ НАВ АЗ AI (ID: {b_id})**\n\n"
-                f"👤 **Клиент:** {data.get('name')}\n"
-                f"✨ **Хизматрасонӣ:** {data.get('service')}\n"
-                f"📅 **Вақт ва Рӯз:** {data.get('time')}\n"
-                f"📞 **Телефон:** {data.get('phone')}\n"
-                f"💬 **Телеграм:** @{user.username or 'нест'}"
+                f"🔔 ЗАКАЗИ НАВ (ID: {b_id})\n\n"
+                f"👤 Клиент: {data.get('name')}\n"
+                f"✨ Хизматрасонӣ: {data.get('service')}\n"
+                f"📅 Вақт: {data.get('time')}\n"
+                f"📞 Телефон: {data.get('phone')}\n"
+                f"💬 Telegram: @{user.username or 'нест'}"
             )
-            
-            from telegram.constants import ParseMode # type: ignore
+
             await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID, 
-                text=admin_msg, 
-                parse_mode=ParseMode.MARKDOWN
+                chat_id=ADMIN_CHAT_ID,
+                text=admin_msg
             )
-            
-            await update.message.reply_text(clean_reply, parse_mode=ParseMode.MARKDOWN)
+
+            await update.message.reply_text(clean_reply)
             return
 
         except Exception as exc:
-            logger.error("Хатогӣ дар парсинги JSON-и заказ: %s", exc, exc_info=True)
+            logger.error(
+                "Booking JSON processing error: %s",
+                exc,
+                exc_info=True
+            )
+
             reply = reply.split("[BOOKING_DATA:")[0].strip()
 
     try:
-        from telegram.constants import ParseMode # type: ignore
-        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(reply)
     except TelegramError as exc:
-        logger.error("Failed to send reply to user %s: %s", user.id, exc, exc_info=True)
+        logger.error(
+            "Failed to send reply to user %s: %s",
+            user.id,
+            exc,
+            exc_info=True
+        )
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global PTB error handler."""
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
     logger.error(
         "PTB unhandled exception while processing update %s: %s",
         update,
@@ -609,6 +661,7 @@ async def main() -> None:
     # --- Firebase -----------------------------------------------------------
     # _init_firebase() is synchronous and completes in milliseconds at startup.
     # It must run before the first get_salon_info() call.
+    init_booking_db()
     _init_firebase()
     # --- Health server ------------------------------------------------------
     health_runner = await start_health_server()
