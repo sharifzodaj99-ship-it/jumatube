@@ -437,11 +437,9 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 2. ФАКАТ ЯК САВОЛ: Дар як паём танҳо ЯК савол бипурс, то мизоҷ чарх назанад.
 3. ЭЪТИРОФИ ХАТОҲО: Агар мизоҷ вақти берун аз кории моро интихоб кунад, бомулоиматӣ вақти кории моро ёдрас кун.
 
-🤖 ШАРТИ БРОН КАРДАН (ФАРМОНИ ТЕХНИКИИ АБСАЛЮТӢ):
-Ҳамин ки ТАМОМИ 5 маълумотро (Ном, Телефон, Хизматрасонӣ, Рӯз ва Соат) пурра ҷамъ кардӣ, ту ТАНҲО ВА ТАНҲО паёми ташаккури меҳрубонона барои мизоҷ менависӣ ва дар худи ОХИРИН сатри паём теги JSON-ро илова мекунӣ:
+🤖 ШАРТИ БРОН КАРДАН (ФАРМОНИ ТЕХНИКИ):
+Ҳамин ки ТАМОМИ 5 маълумотро пурра ҷамъ кардӣ, ту БОЯД дар ОХИРИ паёми худ теги JSON-ро илова кунӣ:
 [BOOKING_DATA:{{"name": "Номи Мизоҷ", "service": "Номи Хизмат", "time": "Рӯз ва Соат", "phone": "Рақами Телефон"}}]
-
-⚠️ ТАҲТИ ТАЪҚИБИ САКТ: Ҳеҷ гоҳ дар ҷавоби худ сатрҳои "🔔 ЗАКАЗИ НАВ", "👤 Клиент:", "✨ Хизматрасонӣ:"-ро нанавис! Ин матнҳо махфӣ ҳастанд ва онҳоро худи система месозад. Ту танҳо барои мизоҷ ҷавоб деҳ.
 """
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -549,7 +547,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if "[BOOKING_DATA:" in reply:
         try:
-            # 1. Ҷудо кардани қисмҳо аз рӯи тег
             parts = reply.split("[BOOKING_DATA:")
             clean_reply = parts[0].strip()
             json_str = parts[1].split("]")[0].strip()
@@ -557,9 +554,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not json_str:
                 raise ValueError("Empty booking JSON")
 
+            if not json_str.startswith("{"):
+                raise ValueError("Invalid booking JSON format")
+
             data = json.loads(json_str)
 
-            # Сабт дар базаи SQLite
+            required_fields = [
+                "name",
+                "service",
+                "time",
+                "phone"
+            ]
+
+            for field in required_fields:
+                if not data.get(field):
+                    raise ValueError(
+                        f"Missing required field: {field}"
+                    )
+
             b_id = await asyncio.to_thread(
                 save_booking_to_db,
                 user_id=user.id,
@@ -570,7 +582,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 phone=data.get("phone")
             )
 
-            # 2. Матни Огоҳиномаро ТАНҲО коди Python аз рӯи JSON месозад (ИИ дигар ба ин дахл ندارد)
             admin_msg = (
                 f"🔔 ЗАКАЗИ НАВ (ID: {b_id})\n\n"
                 f"👤 Клиент: {data.get('name')}\n"
@@ -580,33 +591,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"💬 Telegram: @{user.username or 'нест'}"
             )
 
-            # 3. Фиристодани Огоҳинома мустақим ба Админ
-            await context.bot.send_message(
-                chat_id=int(ADMIN_CHAT_ID),
-                text=admin_msg
-            )
+            # ✅ ИСЛОҲ — хаторо мебинем
+            try:
+                await context.bot.send_message(
+                    chat_id=int(ADMIN_CHAT_ID),
+                    text=admin_msg
+                )
+                logger.info(f"✅ Огоҳинома ба админ {ADMIN_CHAT_ID} фиристода шуд.")
+            except TelegramError as tg_err:
+                logger.error(
+                    f"🚨 Огоҳинома ба админ нарасид! ADMIN_CHAT_ID={ADMIN_CHAT_ID} | Хато: {tg_err}"
+                )
 
-            # 4. 🔥 ФИЛТРИ АМНИЯТИИ ПРОФЕССИОНАЛӢ:
-            # Агар ИИ қоидаро вайрон карда, матни огоҳиномаро дар даруни clean_reply сохта бошад,
-            # мо бо истифода аз тозакунии сатрҳо онро пурра нест мекунем, то мизоҷ набинад!
-            lines = clean_reply.split("\n")
-            filtered_lines = [
-                line for line in lines 
-                if not any(bad_word in line for bad_word in ["🔔 ЗАКАЗИ НАВ", "👤 Клиент:", "✨ Хизматрасонӣ:", "📞 Телефон:", "💬 Telegram:"])
-            ]
-            clean_reply = "\n".join(filtered_lines).strip()
-
-            # Ба мизоҷ танҳо матни ташаккури соф равон мешавад
             await update.message.reply_text(clean_reply)
             return
 
         except Exception as exc:
             logger.error("Booking JSON processing error: %s", exc)
-            # Дар ҳолати хатогӣ ҳам матнро филтр мекунем
             reply = reply.split("[BOOKING_DATA:")[0].strip()
-            lines = reply.split("\n")
-            filtered_lines = [line for line in lines if not any(bad_word in line for bad_word in ["🔔 ЗАКАЗИ НАВ", "👤 Клиент:"])]
-            reply = "\n".join(filtered_lines).strip()
+            # Сатри тиллоӣ: Агар хатогӣ шавад, паёми тозаро мефиристем, то бот хомӯш намонад
             await update.message.reply_text(reply)
             return
 
