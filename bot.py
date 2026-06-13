@@ -392,9 +392,11 @@ _deepseek_client = AsyncOpenAI(
     base_url="https://api.deepseek.com"
 )
 
+# ✅ ИСЛОҲ: Хотира дар сатҳи модул (як бор, берун аз функсия)
+LOCAL_CHAT_MEM: dict = {}
+
 
 def _format_salon_block(salon: dict) -> str:
-    """Convert the salon dict into a human-readable block for the system prompt."""
     services_str = "\n".join(
         f"  - {name}: {price}" for name, price in salon.get("services", {}).items()
     )
@@ -407,10 +409,6 @@ def _format_salon_block(salon: dict) -> str:
 
 
 async def ask_ai(user_id: int, user_text: str) -> str:
-    """
-    Пайвасти касбии DeepSeek бо нигоҳдории хотираи мутлақ дар Firestore 
-    ва сохтани теги автоматӣ барои сабти заказҳо.
-    """
     salon_data = await get_salon_info()
     salon_block = _format_salon_block(salon_data)
 
@@ -430,31 +428,25 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 Ту бояд ин 5 маълумотро пайдарпай ва бе ташвиш додани мизоҷ ҷамъ кунӣ:
 1. Номи мизоҷ
 2. Рақами телефон
-3. Намуди хизматрасонӣ (маникюр, педикюр, причёка, макияж ва ҳ.)
+3. Намуди хизматрасонӣ (маникюр, педикюр, причёска, макияж ва ҳ.)
 4. Рӯзи омадан
 5. Соати омадан (Вақти кории мо: аз 09:00 то 20:00)
 
 🚫 ҚОИДАҲОИ АТМАСФЕРАИ СУПЕР-ПРОФЕССИОНАЛӢ (КРИТИКИ):
 1. ХОТИРАИ МУТЛАҚ: Паёми мизоҷро бодиққат таҳлил кун. Агар мизоҷ аллакай ном, телефон ё вақтро навишта бошад, онро қабул кун ва ДИГАР ҲЕҶ ГОҲ такроран НАПУРС.
 2. ФАКАТ ЯК САВОЛ: Дар як паём танҳо ЯК савол бипурс, то мизоҷ чарх назанад.
-3. ЭЪТИРОФИ ХАТОҲО: Агар мизоҷ вақти берун аз кории моро интихоб кунад (масалан соати 8-и субҳ), бомулоиматӣ вақти кории моро ёдрас кун.
+3. ЭЪТИРОФИ ХАТОҲО: Агар мизоҷ вақти берун аз кории моро интихоб кунад, бомулоиматӣ вақти кории моро ёдрас кун.
 
 🤖 ШАРТИ БРОН КАРДАН (ФАРМОНИ ТЕХНИКИ):
-Ҳамин ки ТАМОМИ 5 маълумотро (Ном, Телефон, Хизматрасонӣ, Рӯз ва Соат) пурра ҷамъ кардӣ, ту БОЯД дар худи ОХИРИ паёми худ теги махсуси JSON-ро бо формати зерин илова кунӣ (ин барои сабти автоматӣ ба база зарур аст):
+Ҳамин ки ТАМОМИ 5 маълумотро пурра ҷамъ кардӣ, ту БОЯД дар ОХИРИ паёми худ теги JSON-ро илова кунӣ:
 [BOOKING_DATA:{{"name": "Номи Мизоҷ", "service": "Номи Хизмат", "time": "Рӯз ва Соат", "phone": "Рақами Телефон"}}]
 """
-
-    # 🔥 ИЛОВАИ КАСБӢ: Хотираи эҳтиётии оперативӣ дар RAM (барои кафолати 100% хотира)
-    if 'LOCAL_CHAT_MEM' not in globals():
-        LOCAL_CHAT_MEM = {}
-
-    # ... (Болои функсияи ask_ai умуман иваз намешавад, танҳо аз ҳамин ҷои поён иваз кун)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     user_history_ref = None
     history_data = []
 
-    # 1. Аввал аз хотираи тези RAM мехонем (Кафолати 100% устуворӣ)
+    # 1. Аввал аз хотираи RAM мехонем
     if user_id in LOCAL_CHAT_MEM:
         history_data = LOCAL_CHAT_MEM[user_id]
         logger.info(f"Хотира барои узери {user_id} аз RAM хонда шуд. 🧠")
@@ -465,20 +457,18 @@ async def ask_ai(user_id: int, user_text: str) -> str:
             doc = await asyncio.to_thread(user_history_ref.get)
             if doc.exists:
                 history_data = doc.to_dict().get("messages", [])
-                LOCAL_CHAT_MEM[user_id] = history_data  # Барои дафъаи занг ба RAM содир мекунем
+                LOCAL_CHAT_MEM[user_id] = history_data
                 logger.info(f"Хотира барои узери {user_id} аз Firestore хонда шуд. ☁️")
         except Exception as e:
             logger.error(f"Хатогии Firestore дар хондан: {e}", exc_info=True)
 
-    # Фақат 14 паёми охиринро ба ИИ мефиристем, то контекст вазнин нашавад
+    # Фақат 14 паёми охиринро ба ИИ мефиристем
     for msg in history_data[-14:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Паёми нави мизоҷро илова мекунем
     messages.append({"role": "user", "content": user_text})
 
     try:
-        # Дархост ба DeepSeek
         response = await _deepseek_client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
@@ -487,15 +477,15 @@ async def ask_ai(user_id: int, user_text: str) -> str:
         )
         ai_reply = response.choices[0].message.content
 
-        # 3. Сабти хотираи нав ба ҲАР ДУ СИСТЕМА
+        # Сабти хотира
         history_data.append({"role": "user", "content": user_text})
         history_data.append({"role": "assistant", "content": ai_reply})
-        history_data = history_data[-30:]  # Танҳо 30 паёми охирин
+        history_data = history_data[-30:]
 
-        # Сабт дар RAM (Ҳеҷ гоҳ хато намекунад ва супер-тез аст)
+        # ✅ Сабт дар RAM
         LOCAL_CHAT_MEM[user_id] = history_data
 
-        # Сабт дар Firestore (Барои архив)
+        # ✅ Сабт дар Firestore
         if _firestore_client is not None:
             try:
                 user_history_ref = _firestore_client.collection("chat_histories").document(str(user_id))
