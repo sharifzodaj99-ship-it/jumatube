@@ -408,21 +408,23 @@ def _format_salon_block(salon: dict) -> str:
 
 async def ask_ai(user_id: int, user_text: str) -> str:
     """
-    Asks the AI (DeepSeek) by dynamically injecting the system prompt, 
-    loading conversation history from Firestore, and managing the context.
+    Пайвасти касбии DeepSeek бо нигоҳдории хотираи мутлақ дар Firestore 
+    ва сохтани теги автоматӣ барои сабти заказҳо.
     """
     salon_data = await get_salon_info()
     salon_block = _format_salon_block(salon_data)
 
-    SYSTEM_PROMPT = """
+    SYSTEM_PROMPT = f"""
 Ту администратори ҳушманд, меҳрубон ва касбии салони ҳусни "Beauty Salon" ҳастӣ. Мақсади ту — дар ҳайрат гузоштани мизоҷон бо муомилаи олӣ ва пайдарпай сабт кардани онҳо барои хизматрасониҳо мебошад.
+
+ℹ️ МАЪЛУМОТИ САЛОН:
+{salon_block}
 
 🎭 ХАРАКТЕР ВА УСЛУБИ СУҲБАТ (VIP TONE):
 - Бо забони тоҷикии хеле ширин, адабӣ ва ҳамзамон замонавӣ суҳбат кун.
 - Ба мизоҷон вобаста ба номашон бо эҳтиром муроҷиат кун (масалан: Азизаҷон, Шаҳлохон, акаи Исмоил).
-- Аз Смайликҳо (Emoji) суиистифода накун, вале дар ҷояш барои зебоӣ ва эҳсоси зинда будан истифода кун (😊, ✨, 🌸, 📅).
-- Ҳеҷ гоҳ паёмҳои дарози хастакунанда нанавис. Кӯтоҳ, ҷолиб ва равшан суҳбат кун.
-- Ба интихоби мизоҷон қиммат бидеҳ! Масалан, агар гӯяд "маникюр", бигӯ: "Олӣ! Коргарони мо дар маникюр беҳтаринанд ✨".
+- Аз Смайликҳо (Emoji) ҷолиб ва барои эҳсоси зинда будан истифода кун (😊, ✨, 🌸, 📅).
+- Кӯтоҳ, ҷолиб ва равшан суҳбат кун. Ба интихоби мизоҷон аҳсант гӯй!
 
 📋 ПАЙДАРПАЙИИ ТИЛЛОИИ ҶАМЪООВАРИИ МАЪЛУМОТ (SLOT FILLING):
 Ту бояд ин 5 маълумотро пайдарпай ва бе ташвиш додани мизоҷ ҷамъ кунӣ:
@@ -433,53 +435,61 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 5. Соати омадан (Вақти кории мо: аз 09:00 то 20:00)
 
 🚫 ҚОИДАҲОИ АТМАСФЕРАИ СУПЕР-ПРОФЕССИОНАЛӢ (КРИТИКИ):
-1. ХОТИРАИ МУТЛАҚ: Паёми мизоҷро бодиққат таҳлил кун. Агар мизоҷ аллакай ном, телефон ё вақтро дар як сатр навишта бошад (масалан: "Азиза 904007905 рузи сешанбе соати 8"), ҳушёр бош! Тамоми ин маълумотҳоро якбора қабул кун, дар хотираат сабт кун ва ДИГАР ҲЕҶ ГОҲ такроран НАПУРС.
-2. ФАКАТ ЯК САВОЛ: Дар як паём танҳо ЯК савол бипурс, то мизоҷ чарх назанад. Масалан, агар ному телефонро гирифта бошӣ, танҳо бипурс: "Ташаккур! Барои кадом хизматрасонӣ шуморо сабт кунам, Азизаҷон?"
-3. ЭЪТИРОФИ ХАТОҲО: Агар мизоҷ вақти берун аз кории моро интихоб кунад (масалан, соати 8-и субҳ), бомулоиматӣ гӯй: "Азизаҷон, коргарони мо аз соати 09:00 ба кор оғоз мекунанд. Агар соати 09:30 ё 10:00 созем, ба шумо қулай аст? ✨"
-4. ХАТМИ СУҲБАТ: Ҳамин ки ҳар 5 маълумотро гирифтӣ, бо як паёми супер-зебо ба мизоҷ тасдиқи бронро эълон кун ва суҳбатро қатъ кун.
+1. ХОТИРАИ МУТЛАҚ: Паёми мизоҷро бодиққат таҳлил кун. Агар мизоҷ аллакай ном, телефон ё вақтро навишта бошад, онро қабул кун ва ДИГАР ҲЕҶ ГОҲ такроран НАПУРС.
+2. ФАКАТ ЯК САВОЛ: Дар як паём танҳо ЯК савол бипурс, то мизоҷ чарх назанад.
+3. ЭЪТИРОФИ ХАТОҲО: Агар мизоҷ вақти берун аз кории моро интихоб кунад (масалан соати 8-и субҳ), бомулоиматӣ вақти кории моро ёдрас кун.
+
+🤖 ШАРТИ БРОН КАРДАН (ФАРМОНИ ТЕХНИКИ):
+Ҳамин ки ТАМОМИ 5 маълумотро (Ном, Телефон, Хизматрасонӣ, Рӯз ва Соат) пурра ҷамъ кардӣ, ту БОЯД дар худи ОХИРИ паёми худ теги махсуси JSON-ро бо формати зерин илова кунӣ (ин барои сабти автоматӣ ба база зарур аст):
+[BOOKING_DATA:{{"name": "Номи Мизоҷ", "service": "Номи Хизмат", "time": "Рӯз ва Соат", "phone": "Рақами Телефон"}}]
 """
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     user_history_ref = None
     history_data = []
     
+    # 1. Хондани хотира аз Firestore
     if _firestore_client is not None:
         try:
             user_history_ref = _firestore_client.collection("chat_histories").document(str(user_id))
             doc = await asyncio.to_thread(user_history_ref.get)
             if doc.exists:
                 history_data = doc.to_dict().get("messages", [])
-                for msg in history_data[-10:]:
+                # Танҳо 14 паёми охиринро ба контекст илова мекунем, то ИИ хотираро гум накунад
+                for msg in history_data[-14:]:
                     messages.append({"role": msg["role"], "content": msg["content"]})
         except Exception as e:
-            logger.error(f"Хатогӣ ҳангоми хондани хотираи чат: {e}")
+            logger.error(f"Хатогӣ ҳангоми хондани хотираи чат аз Firestore: {e}")
 
+    # 2. Илова кардани паёми нави мизоҷ
     messages.append({"role": "user", "content": user_text})
 
     try:
+        # 3. Дархост ба DeepSeek API
         response = await _deepseek_client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
             temperature=0.3,
-            max_tokens=400
+            max_tokens=500
         )
         ai_reply = response.choices[0].message.content
 
+        # 4. Сабти таърихи суҳбати нав ба Firestore
         if _firestore_client is not None and user_history_ref is not None:
             try:
                 history_data.append({"role": "user", "content": user_text})
                 history_data.append({"role": "assistant", "content": ai_reply})
-                history_data = history_data[-20:]
-                await asyncio.to_thread(user_history_ref.set, {"messages": history_data})
+                # Нигоҳ доштани 30 паёми охирин дар база барои амният
+                history_data = history_data[-30:]
+                await asyncio.to_thread(user_history_ref.set, {"messages": history_data}, merge=True)
             except Exception as e:
-                logger.error(f"Хатогӣ ҳангоми сабти хотираи чат: {e}")
+                logger.error(f"Хатогӣ ҳангоми сабти хотираи чат ба Firestore: {e}")
             
-
         return ai_reply
 
     except Exception as exc:
         logger.error(f"DeepSeek API Error: {exc}", exc_info=True)
-        return "Бубахшед, дар занҷири коркарди маълумот хатогӣ рух дод. Лутфан қайди худро аз нав нависед."
+        return "Бубахшед, Азизаҷон. Дар занҷири коркарди маълумоти мо хатогии техникӣ рух дод. Лутфан қайди худро аз нав нависед."
 
 
 # ---------------------------------------------------------------------------
