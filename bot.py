@@ -504,9 +504,14 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 # SECTION 5 — HANDLERS & PTB ENTRY POINT
 # ---------------------------------------------------------------------------
 
-ADMIN_CHAT_ID = int(
-    os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "8122251511")
-)
+# КОДИ НАВУ ТОЗА (Инро ҷои ҳамаи вариантҳои кӯҳнаи ADMIN_CHAT_ID гузор):
+ADMIN_CHAT_ID_RAW = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
+
+if not ADMIN_CHAT_ID_RAW:
+    logger.critical("🚨 ХАТОИ КРИТИКӢ: TELEGRAM_ADMIN_CHAT_ID дар Render сохта нашудааст!")
+    sys.exit("Error: TELEGRAM_ADMIN_CHAT_ID is missing")
+
+ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_RAW)
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
