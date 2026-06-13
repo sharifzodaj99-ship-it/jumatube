@@ -547,6 +547,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if "[BOOKING_DATA:" in reply:
         try:
+            # 1. Ҷудо кардани матни тоза барои мизоҷ (Ҳама чизе ки то теги JSON аст)
             parts = reply.split("[BOOKING_DATA:")
             clean_reply = parts[0].strip()
             json_str = parts[1].split("]")[0].strip()
@@ -554,24 +555,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not json_str:
                 raise ValueError("Empty booking JSON")
 
-            if not json_str.startswith("{"):
-                raise ValueError("Invalid booking JSON format")
-
             data = json.loads(json_str)
 
-            required_fields = [
-                "name",
-                "service",
-                "time",
-                "phone"
-            ]
-
-            for field in required_fields:
-                if not data.get(field):
-                    raise ValueError(
-                        f"Missing required field: {field}"
-                    )
-
+            # Сабт дар базаи SQLite (Дар замина/Thread)
             b_id = await asyncio.to_thread(
                 save_booking_to_db,
                 user_id=user.id,
@@ -582,6 +568,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 phone=data.get("phone")
             )
 
+            # 2. Сохтани матни Огоҳиномаи Расмиву Касбӣ барои Админ
             admin_msg = (
                 f"🔔 ЗАКАЗИ НАВ (ID: {b_id})\n\n"
                 f"👤 Клиент: {data.get('name')}\n"
@@ -591,19 +578,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"💬 Telegram: @{user.username or 'нест'}"
             )
 
-            # ✅ Шакли касбӣ ва бехато:
+            # 3. Фиристодани Огоҳинома ҚАТЪИЯН ба телефони Админ
             await context.bot.send_message(
-    chat_id=int(ADMIN_CHAT_ID),  # Адади бутун (Integer) кардани ID
-    text=admin_msg
-)
+                chat_id=int(ADMIN_CHAT_ID),
+                text=admin_msg
+            )
+
+            # 4. 🔥 СУПЕР-МУҲИМ: Ба мизоҷ ТАНҲО матни тозаи ташаккурро мефиристем!
+            # Агар ИИ дар даруни clean_reply ягон матни огоҳинома сохта бошад, онро тоза мекунем
+            if "🔔 ЗАКАЗИ НАВ" in clean_reply:
+                clean_reply = clean_reply.split("🔔 ЗАКАЗИ НАВ")[0].strip()
 
             await update.message.reply_text(clean_reply)
-            return
+            return  # Суҳбатро ҳамин ҷо қатъ мекунем, то коди поёнӣ дигар иҷро нашавад!
 
         except Exception as exc:
             logger.error("Booking JSON processing error: %s", exc)
             reply = reply.split("[BOOKING_DATA:")[0].strip()
-            # Сатри тиллоӣ: Агар хатогӣ шавад, паёми тозаро мефиристем, то бот хомӯш намонад
+            if "🔔 ЗАКАЗИ НАВ" in reply:
+                reply = reply.split("🔔 ЗАКАЗИ НАВ")[0].strip()
             await update.message.reply_text(reply)
             return
 
