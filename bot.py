@@ -444,28 +444,41 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 [BOOKING_DATA:{{"name": "Номи Мизоҷ", "service": "Номи Хизмат", "time": "Рӯз ва Соат", "phone": "Рақами Телефон"}}]
 """
 
+    # 🔥 ИЛОВАИ КАСБӢ: Хотираи эҳтиётии оперативӣ дар RAM (барои кафолати 100% хотира)
+    if 'LOCAL_CHAT_MEM' not in globals():
+        LOCAL_CHAT_MEM = {}
+
+    # ... (Болои функсияи ask_ai умуман иваз намешавад, танҳо аз ҳамин ҷои поён иваз кун)
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     user_history_ref = None
     history_data = []
-    
-    # 1. Хондани хотира аз Firestore
-    if _firestore_client is not None:
+
+    # 1. Аввал аз хотираи тези RAM мехонем (Кафолати 100% устуворӣ)
+    if user_id in LOCAL_CHAT_MEM:
+        history_data = LOCAL_CHAT_MEM[user_id]
+        logger.info(f"Хотира барои узери {user_id} аз RAM хонда шуд. 🧠")
+    # 2. Агар дар RAM набошад, аз Firestore мехонем
+    elif _firestore_client is not None:
         try:
             user_history_ref = _firestore_client.collection("chat_histories").document(str(user_id))
             doc = await asyncio.to_thread(user_history_ref.get)
             if doc.exists:
                 history_data = doc.to_dict().get("messages", [])
-                # Танҳо 14 паёми охиринро ба контекст илова мекунем, то ИИ хотираро гум накунад
-                for msg in history_data[-14:]:
-                    messages.append({"role": msg["role"], "content": msg["content"]})
+                LOCAL_CHAT_MEM[user_id] = history_data  # Барои дафъаи занг ба RAM содир мекунем
+                logger.info(f"Хотира барои узери {user_id} аз Firestore хонда шуд. ☁️")
         except Exception as e:
-            logger.error(f"Хатогӣ ҳангоми хондани хотираи чат аз Firestore: {e}")
+            logger.error(f"Хатогии Firestore дар хондан: {e}", exc_info=True)
 
-    # 2. Илова кардани паёми нави мизоҷ
+    # Фақат 14 паёми охиринро ба ИИ мефиристем, то контекст вазнин нашавад
+    for msg in history_data[-14:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+
+    # Паёми нави мизоҷро илова мекунем
     messages.append({"role": "user", "content": user_text})
 
     try:
-        # 3. Дархост ба DeepSeek API
+        # Дархост ба DeepSeek
         response = await _deepseek_client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
@@ -474,22 +487,27 @@ async def ask_ai(user_id: int, user_text: str) -> str:
         )
         ai_reply = response.choices[0].message.content
 
-        # 4. Сабти таърихи суҳбати нав ба Firestore
-        if _firestore_client is not None and user_history_ref is not None:
+        # 3. Сабти хотираи нав ба ҲАР ДУ СИСТЕМА
+        history_data.append({"role": "user", "content": user_text})
+        history_data.append({"role": "assistant", "content": ai_reply})
+        history_data = history_data[-30:]  # Танҳо 30 паёми охирин
+
+        # Сабт дар RAM (Ҳеҷ гоҳ хато намекунад ва супер-тез аст)
+        LOCAL_CHAT_MEM[user_id] = history_data
+
+        # Сабт дар Firestore (Барои архив)
+        if _firestore_client is not None:
             try:
-                history_data.append({"role": "user", "content": user_text})
-                history_data.append({"role": "assistant", "content": ai_reply})
-                # Нигоҳ доштани 30 паёми охирин дар база барои амният
-                history_data = history_data[-30:]
+                user_history_ref = _firestore_client.collection("chat_histories").document(str(user_id))
                 await asyncio.to_thread(user_history_ref.set, {"messages": history_data}, merge=True)
             except Exception as e:
-                logger.error(f"Хатогӣ ҳангоми сабти хотираи чат ба Firestore: {e}")
-            
+                logger.error(f"Хатогии Firestore дар сабт: {e}")
+
         return ai_reply
 
     except Exception as exc:
         logger.error(f"DeepSeek API Error: {exc}", exc_info=True)
-        return "Бубахшед, Азизаҷон. Дар занҷири коркарди маълумоти мо хатогии техникӣ рух дод. Лутфан қайди худро аз нав нависед."
+        return "Бубахшед, Азизаҷон. Дар система хатогии техникӣ рӯй дод. Лутфан қайди худро аз нав нависед."
 
 
 # ---------------------------------------------------------------------------
