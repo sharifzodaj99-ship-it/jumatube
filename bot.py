@@ -505,13 +505,11 @@ async def ask_ai(user_id: int, user_text: str) -> str:
 # ---------------------------------------------------------------------------
 
 # КОДИ НАВУ ТОЗА (Инро ҷои ҳамаи вариантҳои кӯҳнаи ADMIN_CHAT_ID гузор):
-ADMIN_CHAT_ID_RAW = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
+# ✅ ИН КОДРО БИГУЗОр
+ADMIN_CHAT_ID = int(os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "0"))
 
-if not ADMIN_CHAT_ID_RAW:
-    logger.critical("🚨 ХАТОИ КРИТИКӢ: TELEGRAM_ADMIN_CHAT_ID дар Render сохта нашудааст!")
-    sys.exit("Error: TELEGRAM_ADMIN_CHAT_ID is missing")
-
-ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_RAW)
+if ADMIN_CHAT_ID == 0:
+    logger.warning("⚠️ TELEGRAM_ADMIN_CHAT_ID сохта нашудааст — огоҳиномаҳо фиристода намешаванд.")
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
