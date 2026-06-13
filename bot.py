@@ -44,13 +44,13 @@ Dependencies (pip install):
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
-import sqlite3  # 🟢 ИЛОВА ШУД: Барои кор бо базаи SQLite-и заказҳо
+import sqlite3
 import sys
-from datetime import datetime  # 🟢 ИЛОВА ШУД: Барои сабти вақти аниқи аризаҳо
-from multiprocessing import context
+from datetime import datetime
 
 import aiohttp
 import firebase_admin  # type: ignore
@@ -252,20 +252,23 @@ _firestore_client = None
 
 
 def _init_firebase() -> None:
-    """Initialises Firebase Admin SDK cleanly using the Render Secret File."""
+    """Инициализацияи касбӣ ва бехатари Firebase тавассути Base64 Environment Variable."""
     global _firestore_client
     
-    # Роҳи файл ба Secret File-и дар Render сохтаамон
-    cred_file_path = "google_creds.json"
+    # 1. Хондани сатри дарози Base64 аз муҳити сервер (Render)
+    b64_creds = os.environ.get("FIREBASE_CREDS_BASE64", "")
     
-    # Тафтиш мекунем, ки оё файл дар сервер мавҷуд аст ё на
-    if not os.path.exists(cred_file_path):
-        logger.warning("Файли google_creds.json наёфт. Хотираи кӯтоҳмуддати локалӣ фаъол шуд.")
+    if not b64_creds:
+        logger.warning("Тағйирёбандаи FIREBASE_CREDS_BASE64 ёфт нашуд. Хотираи локалӣ кор мекунад.")
         return
 
     try:
-        # Файли JSON-ро мустақим ба SDK-и Google месупорем (Хеле бехатар ва касбӣ)
-        cred = credentials.Certificate(cred_file_path)
+        # 2. Декод кардани сатри Base64 ба байтҳо ва табдил ба матни JSON
+        decoded_bytes = base64.b64decode(b64_creds)
+        creds_dict = json.loads(decoded_bytes)
+        
+        # 3. Мустақим супоридани маълумот ба SDK-и Google (Бе сохтани ягон файл!)
+        cred = credentials.Certificate(creds_dict)
         
         try:
             firebase_admin.initialize_app(cred)
@@ -273,9 +276,10 @@ def _init_firebase() -> None:
             pass  # Агар аллакай инстансия сохта шуда бошад
 
         _firestore_client = firestore.client()
-        logger.info("Firebase Admin SDK (Cloud Firestore) бомуваффақият тавассути Secret File фаъол шуд!")
+        logger.info("Firebase Admin SDK бомуваффақият бо усули Бехатар (Base64) фаъол шуд! 🔐✅")
+        
     except Exception as exc:
-        logger.error("Хатогии касбӣ дар фаъолкунии Firebase аз файл: %s", exc, exc_info=True)
+        logger.error("Хатогии касбӣ дар фаъолкунии Firebase бо Base64: %s", exc, exc_info=True)
 
 
 async def get_salon_info() -> dict:
